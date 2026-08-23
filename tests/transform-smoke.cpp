@@ -80,14 +80,18 @@ bool runTransformSmoke(QString &error) {
   }
 
   const QByteArray originalPath = qgetenv("PATH");
+  const QByteArray originalSwaySocket = qgetenv("SWAYSOCK");
   qputenv("PATH", fakeCommands.path().toUtf8() + ':' + originalPath);
   qputenv("SWAYSOCK", QByteArrayLiteral("/tmp/omasnap-test-sway.sock"));
   qputenv("OMASNAP_TEST_CAPTURE", capturePath.toUtf8());
-  const auto restoreEnvironment = [&originalPath] {
+  const auto restoreEnvironment = [&originalPath, &originalSwaySocket] {
     qputenv("PATH", originalPath);
     qunsetenv("OMASNAP_TEST_CAPTURE");
     qunsetenv("OMASNAP_TEST_TRANSFORM");
-    qunsetenv("SWAYSOCK");
+    if (originalSwaySocket.isEmpty())
+      qunsetenv("SWAYSOCK");
+    else
+      qputenv("SWAYSOCK", originalSwaySocket);
   };
   for (const QByteArray &transform :
        {QByteArrayLiteral("90"), QByteArrayLiteral("270"),
@@ -150,8 +154,23 @@ bool runTransformSmoke(QString &error) {
       {WL_OUTPUT_TRANSFORM_FLIPPED_270, indexedImage({{6, 4, 2}, {5, 3, 1}})},
   };
   for (const auto &[transform, transformed] : transformedImages) {
-    if (normalizeWaylandCapture(transformed, transform) != upright) {
+    const QImage normalized = normalizeWaylandCapture(transformed, transform);
+    if (normalized != upright) {
       error = QStringLiteral("Captured Wayland buffer was not upright");
+      return false;
+    }
+
+    CaptureData capture;
+    capture.source = normalized;
+    capture.previewSize = normalized.size();
+    const QImage rightColumn = renderCapture(
+        capture, QRectF(1, 0, 1, 2), {}, BackgroundStyle::None);
+    if (rightColumn.size() != QSize(1, 2) ||
+        rightColumn.pixelColor(0, 0).red() != 2 ||
+        rightColumn.pixelColor(0, 1).red() != 4) {
+      error = QStringLiteral(
+                  "Directional crop was incorrect after Wayland transform %1")
+                  .arg(transform);
       return false;
     }
   }
