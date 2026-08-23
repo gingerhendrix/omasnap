@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+prefix="${OMASNAP_PREFIX:-$HOME/.local}"
+build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/omasnap-sway/build"
+
+required=(cmake ninja pkg-config wayland-scanner swaymsg wl-copy wl-paste notify-send tesseract)
+for command_name in "${required[@]}"; do
+  if ! command -v "$command_name" >/dev/null; then
+    printf 'install-arch: missing required command: %s\n' "$command_name" >&2
+    exit 1
+  fi
+done
+
+cmake -S "$repo_dir" -B "$build_dir" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$prefix"
+cmake --build "$build_dir" --parallel
+cmake --install "$build_dir"
+
+"$prefix/bin/omasnap" --version

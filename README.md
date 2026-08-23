@@ -1,6 +1,6 @@
-# Omasnap
+# Omasnap for Sway
 
-A native Wayland screenshot and annotation overlay designed for Omarchy and Hyprland.
+A native Wayland screenshot and annotation overlay adapted for Sway.
 It captures the focused monitor before mapping an exclusive layer-shell surface, so the
 editor never appears in its own screenshot. The editor retains annotations as movable,
 resizable vector layers and preserves the monitor's native pixels on scaled displays.
@@ -39,85 +39,64 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
 
 ## Platform scope
 
-The supported target is **Wayland + Hyprland**, with Omarchy as the primary integration.
-The renderer, layer surface, clipboard, and monitor capture use Wayland protocols;
-monitor/window discovery currently calls `hyprctl`. The focused output is captured
-in-process through `ext-image-copy-capture` before the layer maps. Selection displays
-that captured frame, while the annotation editor uses
-a translucent layer scrim over the live desktop and draws only the selected capture.
-Another Wayland compositor could support the application after supplying equivalent
-monitor and window discovery; generic Wayland support is not claimed by 1.0.
+The supported target is **Wayland + Sway**. Focused-output and visible-window discovery
+use Sway IPC through `swaymsg`. The focused output is captured in-process through
+`ext-image-copy-capture` before the layer maps. Region and full-output selection use
+that frozen frame directly. Window selection recursively reads Sway's tiled and
+floating container tree, clips the selected container to the focused output, and crops
+the same frozen frame. This visible-window fallback intentionally includes decorations
+and any overlapping content; it does not require a foreign-toplevel capture-source
+manager, which Sway 1.11 does not provide.
 
 Runtime commands used by the application:
 
-- `hyprctl`
+- `swaymsg` (with `SWAYSOCK` set by Sway)
 - `wl-copy` and `wl-paste`
 - `tesseract`
-- `omarchy-notification-send` when available; saved captures include a thumbnail and
-  reopen in Omasnap when clicked. Notification failure does not invalidate output.
+- `notify-send`; notification failure does not invalidate output.
 
-## Install on Omarchy
-
-Clone the repository and run the Omarchy installer:
-
-```bash
-git clone https://github.com/tobi/omasnap.git
-cd omasnap
-./install-omarchy
-```
-
-The installer uses Omarchy's package helper for missing dependencies, builds in
-`~/.cache/omasnap`, and installs under `~/.local`. It does not modify
-Hyprland configuration.
-
-### Hyprland binding
-
-Paste this into a Lua config loaded after `require("default.hypr.omarchy")`:
-
-```lua
-hl.unbind("PRINT")
-hl.unbind("F12")
-hl.unbind("ALT + SHIFT + 4")
-
-o.bind("PRINT", "Screenshot", "omasnap")
-o.bind("F12", "Screenshot", "omasnap")
-o.bind("ALT + SHIFT + 4", "Screenshot", "omasnap")
-
-hl.layer_rule({
-  match = { namespace = "^omasnap$" },
-  no_anim = true,
-  animation = "none",
-  no_screen_share = true,
-})
-```
-
-Each of these keys toggles: the first press opens the overlay, the next press dismisses it.
-
-Apply and verify:
-
-```bash
-hyprctl reload
-hyprctl configerrors
-hyprctl binds -j | jq -c \
-  '[.[] | select(.description == "Screenshot") | {modmask,key,description}]'
-```
-
-`omarchy plugin add` is intentionally not used. Omarchy plugins are Quickshell QML
-extensions; they do not install native executables or system packages.
-
-Set `OMASNAP_PREFIX` before running `install-omarchy` to use a prefix other than
-`~/.local`.
-
-### Manual Arch Linux build
+## Install on Arch Linux and Sway
 
 Install the complete build/runtime dependency set:
 
 ```bash
 sudo pacman -S --needed \
   base-devel cmake ninja pkgconf qt6-base layer-shell-qt \
-  wayland wayland-protocols hyprland wl-clipboard \
+  wayland wayland-protocols sway wl-clipboard libnotify \
   tesseract tesseract-data-eng
 ```
+
+From a checkout of this repository's `sway` branch, run the dependency-checking
+Arch installer:
+
+```bash
+./install-arch
+```
+
+The installer does not invoke a package manager or edit Sway configuration. It builds
+with Ninja under `${XDG_CACHE_HOME:-~/.cache}/omasnap-sway/build` and installs under
+`~/.local`. Set `OMASNAP_PREFIX` to choose another prefix.
+
+### Sway bindings
+
+Add bindings like these to `~/.config/sway/config`:
+
+```text
+bindsym Print exec omasnap
+bindsym $mod+Print exec omasnap --capture-fullscreen
+bindsym $mod+Shift+Print exec omasnap --capture-window
+```
+
+Each of these keys toggles: the first press opens the overlay, the next press dismisses it.
+
+Reload and verify:
+
+```bash
+swaymsg reload
+swaymsg -t get_outputs -r | jq '.[] | select(.focused) | {name,rect,scale,transform,current_workspace}'
+```
+
+### Manual build
 
 Build and install:
 
@@ -188,8 +167,7 @@ the overlay that is still on screen.
 
 Editing an existing image is never cancelled this way: `--file`, `--clipboard`, or an
 image path stops the running instance, waits up to two seconds for the lock, and opens the
-editor on that image. That is how a pin's Edit button and a notification click always land
-in the editor.
+editor on that image. That is how a pin's Edit button always lands in the editor.
 
 A lock left behind by a crashed instance is removed and reclaimed. A lock file that cannot
 be read or written at all is reported on stderr instead of being mistaken for a running
@@ -223,9 +201,8 @@ omasnap --clipboard
 The clipboard must offer readable image data. Text-only clipboard contents return an
 error instead of opening an empty editor.
 
-File URLs are accepted too. A saved capture notification's "Click to edit" action launches
-`omasnap` on the finished screenshot, so it can be reopened and re-annotated. Captures copied
-without saving are not retained on disk and therefore have no delayed edit action.
+File URLs are accepted too. Saved images can be reopened and re-annotated by passing
+their path to `omasnap`. Captures copied without saving are not retained on disk.
 
 Environment overrides:
 
@@ -237,9 +214,8 @@ OMASNAP_OCR_LANGS="tha+eng" omasnap
 ```
 
 Install the corresponding Tesseract language data before adding a language to
-`OMASNAP_OCR_LANGS`. When unset, omasnap falls back to Omarchy's
-`OMARCHY_OCR_LANGS` (which commonly includes the user's script, e.g.
-`tha+eng`), then to `eng`.
+`OMASNAP_OCR_LANGS`. When unset, omasnap falls back to the legacy
+`OMARCHY_OCR_LANGS` environment variable, then to `eng`.
 
 ## Controls
 
@@ -333,7 +309,8 @@ edges.
 make check
 ```
 
-The smoke executable exercises region/window/fullscreen startup modes, capture selection,
+The smoke executable exercises region/window/fullscreen startup modes, Sway output/tree
+parsing, fractional and transformed-output crop mapping, capture selection,
 working-document persistence (source plus op-log JSON), annotation tools, undo/redo
 replay, vector movement and scaling, text editing, OCR, native-DPI output,
 endpoint-only line selection, external crop handles, and the native-pixel
@@ -364,3 +341,5 @@ the repository root while retaining its relevant commit history.
 
 The bundled Neucha font is distributed under the SIL Open Font License; its license is in
 `assets/OFL.txt` and is installed with the application.
+
+Omasnap source code is distributed under the MIT License in `LICENSE`.

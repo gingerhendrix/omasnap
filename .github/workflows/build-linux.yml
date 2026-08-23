@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check installer scripts
-        run: bash -n install-omarchy
+        run: bash -n install-arch
 
       - name: Build, run interaction smoke, and analyze sources
         env:
