@@ -93,7 +93,7 @@ private:
 int main(int argc, char **argv) {
   QCoreApplication::setApplicationName(QStringLiteral("omasnap"));
   QCoreApplication::setApplicationVersion(QString::fromLatin1(OMASNAP_VERSION));
-  QCoreApplication::setOrganizationName(QStringLiteral("Omarchy"));
+  QCoreApplication::setOrganizationName(QStringLiteral("Omasnap"));
   qputenv("QT_WAYLAND_SHELL_INTEGRATION", "layer-shell");
   QGuiApplication::setDesktopFileName(QStringLiteral("omasnap"));
   QApplication application(argc, argv);
@@ -105,8 +105,7 @@ int main(int argc, char **argv) {
 
   QCommandLineParser parser;
   parser.setApplicationDescription(QStringLiteral(
-      "Native Wayland screenshot and annotation overlay for Hyprland and "
-      "Omarchy.\n"
+      "Native Wayland screenshot and annotation overlay for Sway.\n"
       "\n"
       "Only one capture overlay runs at a time. Starting omasnap again while "
       "an\noverlay is open dismisses it: the running instance is asked to "
@@ -360,7 +359,7 @@ int main(int argc, char **argv) {
                              "Captured %1 workspace %2 with %3 selectable "
                              "windows")
                              .arg(capture.monitor.name)
-                             .arg(capture.monitor.workspaceId)
+                             .arg(capture.monitor.workspace)
                              .arg(capture.windows.size());
   }
 

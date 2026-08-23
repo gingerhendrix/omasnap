@@ -47,21 +47,26 @@ bool runTransformSmoke(QString &error) {
     error = QStringLiteral("Could not create transform-test directory");
     return false;
   }
-  const QString fakeHyprctl =
-      QDir(fakeCommands.path()).filePath(QStringLiteral("hyprctl"));
-  const QByteArray hyprctlScript = QByteArrayLiteral(
+  const QString fakeSwaymsg =
+      QDir(fakeCommands.path()).filePath(QStringLiteral("swaymsg"));
+  const QByteArray swaymsgScript = QByteArrayLiteral(
       "#!/usr/bin/env bash\n"
       "set -euo pipefail\n"
-      "if [[ \"${1:-}\" == \"monitors\" ]]; then\n"
-      "  printf '[{\"focused\":true,\"scale\":1.0,\"width\":300,"
-      "\"height\":200,\"transform\":%s,\"name\":\"TEST-ROTATED\","
-      "\"x\":0,\"y\":0,\"activeWorkspace\":{\"id\":7}}]\\n' "
+      "if [[ \"${2:-}\" == \"get_outputs\" ]]; then\n"
+      "  printf '[{\"focused\":true,\"scale\":1.0,"
+      "\"rect\":{\"x\":0,\"y\":0,\"width\":200,\"height\":300},"
+      "\"current_mode\":{\"width\":300,\"height\":200},"
+      "\"transform\":\"%s\",\"name\":\"TEST-ROTATED\","
+      "\"current_workspace\":\"7\"}]\\n' "
       "\"$OMASNAP_TEST_TRANSFORM\"\n"
       "else\n"
-      "  printf '[{\"workspace\":{\"id\":7},\"at\":[0,0],\"size\":[100,100],"
-      "\"title\":\"Test window\",\"stableId\":\"w1\"}]\\n'\n"
+      "  printf '%s\\n' '{\"type\":\"root\",\"nodes\":[{\"type\":"
+      "\"output\",\"name\":\"TEST-ROTATED\",\"nodes\":[{\"type\":"
+      "\"workspace\",\"name\":\"7\",\"nodes\":[{\"type\":\"con\","
+      "\"name\":\"Test window\",\"visible\":true,\"app_id\":\"test\","
+      "\"rect\":{\"x\":0,\"y\":0,\"width\":100,\"height\":100}}]}]}]}'\n"
       "fi\n");
-  if (!writeExecutable(fakeHyprctl, hyprctlScript)) {
+  if (!writeExecutable(fakeSwaymsg, swaymsgScript)) {
     error = QStringLiteral("Could not create transform-test commands");
     return false;
   }
@@ -76,14 +81,18 @@ bool runTransformSmoke(QString &error) {
 
   const QByteArray originalPath = qgetenv("PATH");
   qputenv("PATH", fakeCommands.path().toUtf8() + ':' + originalPath);
+  qputenv("SWAYSOCK", QByteArrayLiteral("/tmp/omasnap-test-sway.sock"));
   qputenv("OMASNAP_TEST_CAPTURE", capturePath.toUtf8());
   const auto restoreEnvironment = [&originalPath] {
     qputenv("PATH", originalPath);
     qunsetenv("OMASNAP_TEST_CAPTURE");
     qunsetenv("OMASNAP_TEST_TRANSFORM");
+    qunsetenv("SWAYSOCK");
   };
-  for (const int transform : {1, 3, 5, 7}) {
-    qputenv("OMASNAP_TEST_TRANSFORM", QByteArray::number(transform));
+  for (const QByteArray &transform :
+       {QByteArrayLiteral("90"), QByteArrayLiteral("270"),
+        QByteArrayLiteral("flipped-90"), QByteArrayLiteral("flipped-270")}) {
+    qputenv("OMASNAP_TEST_TRANSFORM", transform);
     CaptureData rotatedCapture;
     if (!captureFocusedMonitor(rotatedCapture, true, error) ||
         rotatedCapture.monitor.geometry.size() != QSize(200, 300) ||
@@ -97,7 +106,7 @@ bool runTransformSmoke(QString &error) {
   }
 
   // Callers that never show the overlay skip window discovery entirely.
-  qputenv("OMASNAP_TEST_TRANSFORM", QByteArrayLiteral("0"));
+  qputenv("OMASNAP_TEST_TRANSFORM", QByteArrayLiteral("90"));
   CaptureData withoutWindows;
   if (!captureFocusedMonitor(withoutWindows, false, error) ||
       withoutWindows.source.size() != QSize(300, 200) ||

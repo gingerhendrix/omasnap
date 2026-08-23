@@ -1,0 +1,20 @@
+[
+  {
+    "name": "eDP-1",
+    "focused": false,
+    "rect": {"x": 0, "y": 0, "width": 1920, "height": 1280},
+    "current_mode": {"width": 2880, "height": 1920},
+    "scale": 1.5,
+    "transform": "normal",
+    "current_workspace": "81"
+  },
+  {
+    "name": "DP-3",
+    "focused": true,
+    "rect": {"x": 1920, "y": 0, "width": 3199, "height": 1799},
+    "current_mode": {"width": 3840, "height": 2160},
+    "scale": 1.2000000476837158,
+    "transform": "normal",
+    "current_workspace": "dev:main"
+  }
+]

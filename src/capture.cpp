@@ -21,7 +21,6 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 
-#include <QUrl>
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
@@ -189,12 +188,82 @@ QString screenshotTargetPath(QString &error) {
   return path;
 }
 
-bool parseMonitor(const QByteArray &json, MonitorInfo &monitor,
-                  QString &error) {
+QRect jsonRect(const QJsonObject &object) {
+  return {object.value(QStringLiteral("x")).toInt(),
+          object.value(QStringLiteral("y")).toInt(),
+          object.value(QStringLiteral("width")).toInt(),
+          object.value(QStringLiteral("height")).toInt()};
+}
+
+bool hasQuarterTurn(const QString &transform) {
+  return transform == QStringLiteral("90") ||
+         transform == QStringLiteral("270") ||
+         transform == QStringLiteral("flipped-90") ||
+         transform == QStringLiteral("flipped-270");
+}
+
+bool isSwayView(const QJsonObject &node) {
+  return !node.value(QStringLiteral("app_id")).toString().isEmpty() ||
+         node.value(QStringLiteral("pid")).toInteger() > 0 ||
+         !node.value(QStringLiteral("window_properties")).toObject().isEmpty() ||
+         !node.value(QStringLiteral("foreign_toplevel_identifier"))
+              .toString()
+              .isEmpty();
+}
+
+QString swayViewTitle(const QJsonObject &node) {
+  QString title = node.value(QStringLiteral("name")).toString();
+  if (title.isEmpty())
+    title = node.value(QStringLiteral("app_id")).toString();
+  if (title.isEmpty())
+    title = node.value(QStringLiteral("window_properties"))
+                .toObject()
+                .value(QStringLiteral("class"))
+                .toString();
+  return title.isEmpty() ? QStringLiteral("window") : title;
+}
+
+void collectSwayViews(const QJsonObject &node, const MonitorInfo &monitor,
+                      QString output, QString workspace,
+                      QVector<WindowTarget> &windows) {
+  const QString type = node.value(QStringLiteral("type")).toString();
+  if (type == QStringLiteral("output"))
+    output = node.value(QStringLiteral("name")).toString();
+  else if (type == QStringLiteral("workspace"))
+    workspace = node.value(QStringLiteral("name")).toString();
+
+  if (output == monitor.name && workspace == monitor.workspace &&
+      node.value(QStringLiteral("visible")).toBool() && isSwayView(node)) {
+    QRect rect = jsonRect(node.value(QStringLiteral("rect")).toObject());
+    // Sway's container rect already includes decorations. deco_rect is in
+    // layout coordinates and must not be added to these bounds.
+    rect.translate(-monitor.geometry.topLeft());
+    rect = rect.intersected(QRect(QPoint(), monitor.geometry.size()));
+    if (!rect.isEmpty()) {
+      windows.push_back(
+          {rect,
+           node.value(QStringLiteral("foreign_toplevel_identifier"))
+               .toString(),
+           swayViewTitle(node)});
+    }
+  }
+
+  for (const QString &key : {QStringLiteral("nodes"),
+                             QStringLiteral("floating_nodes")}) {
+    for (const QJsonValue &child : node.value(key).toArray())
+      collectSwayViews(child.toObject(), monitor, output, workspace, windows);
+  }
+}
+
+} // namespace
+
+bool parseSwayOutputs(const QByteArray &json, MonitorInfo &monitor,
+                      QString &error) {
+  error.clear();
   QJsonParseError parseError;
   const QJsonDocument document = QJsonDocument::fromJson(json, &parseError);
   if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
-    error = QStringLiteral("Could not parse Hyprland monitors: %1")
+    error = QStringLiteral("Could not parse Sway outputs: %1")
                 .arg(parseError.errorString());
     return false;
   }
@@ -204,68 +273,46 @@ bool parseMonitor(const QByteArray &json, MonitorInfo &monitor,
     if (!object.value(QStringLiteral("focused")).toBool())
       continue;
 
-    const qreal scale = object.value(QStringLiteral("scale")).toDouble(1.0);
-    const int rawWidth = object.value(QStringLiteral("width")).toInt();
-    const int rawHeight = object.value(QStringLiteral("height")).toInt();
-    const int transform = object.value(QStringLiteral("transform")).toInt();
-    int logicalWidth = qRound(rawWidth / std::max<qreal>(scale, 0.01));
-    int logicalHeight = qRound(rawHeight / std::max<qreal>(scale, 0.01));
-    if (transform == 1 || transform == 3 || transform == 5 || transform == 7)
-      std::swap(logicalWidth, logicalHeight);
+    const QJsonObject rect = object.value(QStringLiteral("rect")).toObject();
+    const QJsonObject mode =
+        object.value(QStringLiteral("current_mode")).toObject();
+    int pixelWidth = mode.value(QStringLiteral("width")).toInt();
+    int pixelHeight = mode.value(QStringLiteral("height")).toInt();
+    monitor.transform = object.value(QStringLiteral("transform")).toString();
+    if (hasQuarterTurn(monitor.transform))
+      std::swap(pixelWidth, pixelHeight);
 
     monitor.name = object.value(QStringLiteral("name")).toString();
-    monitor.geometry = {object.value(QStringLiteral("x")).toInt(),
-                        object.value(QStringLiteral("y")).toInt(), logicalWidth,
-                        logicalHeight};
-    monitor.pixelSize = {rawWidth, rawHeight};
-    monitor.scale = scale;
-    monitor.workspaceId = object.value(QStringLiteral("activeWorkspace"))
-                              .toObject()
-                              .value(QStringLiteral("id"))
-                              .toInt();
-    return !monitor.name.isEmpty() && logicalWidth > 0 && logicalHeight > 0;
+    monitor.geometry = jsonRect(rect);
+    monitor.pixelSize = {pixelWidth, pixelHeight};
+    monitor.scale = object.value(QStringLiteral("scale")).toDouble(1.0);
+    monitor.workspace =
+        object.value(QStringLiteral("current_workspace")).toString();
+    return !monitor.name.isEmpty() && !monitor.geometry.size().isEmpty() &&
+           !monitor.pixelSize.isEmpty();
   }
 
-  error = QStringLiteral("Hyprland did not report a focused monitor");
+  error = QStringLiteral("Sway did not report a focused output");
   return false;
 }
 
-QVector<WindowTarget> parseWindows(const QByteArray &json,
-                                   const MonitorInfo &monitor) {
-  QVector<WindowTarget> result;
-  const QJsonDocument document = QJsonDocument::fromJson(json);
-  if (!document.isArray())
-    return result;
-
-  for (const QJsonValue value : document.array()) {
-    const QJsonObject object = value.toObject();
-    if (object.value(QStringLiteral("workspace"))
-            .toObject()
-            .value(QStringLiteral("id"))
-            .toInt() != monitor.workspaceId)
-      continue;
-
-    const QJsonArray at = object.value(QStringLiteral("at")).toArray();
-    const QJsonArray size = object.value(QStringLiteral("size")).toArray();
-    if (at.size() < 2 || size.size() < 2)
-      continue;
-
-    QRect rect(at.at(0).toInt() - monitor.geometry.x(),
-               at.at(1).toInt() - monitor.geometry.y(), size.at(0).toInt(),
-               size.at(1).toInt());
-    rect = rect.intersected(QRect(QPoint(), monitor.geometry.size()));
-    if (rect.isEmpty())
-      continue;
-
-    QString title = object.value(QStringLiteral("title")).toString();
-    if (title.isEmpty())
-      title = object.value(QStringLiteral("class"))
-                  .toString(QStringLiteral("window"));
-    result.push_back({rect, object.value(QStringLiteral("stableId")).toString(),
-                      std::move(title)});
+QVector<WindowTarget> parseSwayTree(const QByteArray &json,
+                                    const MonitorInfo &monitor,
+                                    QString &error) {
+  error.clear();
+  QJsonParseError parseError;
+  const QJsonDocument document = QJsonDocument::fromJson(json, &parseError);
+  if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+    error = QStringLiteral("Could not parse Sway tree: %1")
+                .arg(parseError.errorString());
+    return {};
   }
+  QVector<WindowTarget> result;
+  collectSwayViews(document.object(), monitor, {}, {}, result);
   return result;
 }
+
+namespace {
 
 void drawAnnotation(QPainter &painter, const Annotation &annotation) {
   // Redactions replace source pixels in renderCapture before ordinary vector
@@ -523,9 +570,15 @@ void applyRedactions(QImage &image, const QVector<Annotation> &annotations,
   }
 }
 
-QRect pixelSelection(const CaptureData &capture, const QRectF &selection) {
+} // namespace
+
+QRect sourcePixelRect(const CaptureData &capture, const QRectF &selection) {
+  if (capture.source.isNull() || capture.previewSize.isEmpty())
+    return {};
   const QRectF bounded = selection.normalized().intersected(
       QRectF(QPointF(), capture.previewSize));
+  if (bounded.isEmpty())
+    return {};
   const qreal scaleX =
       capture.source.width() / static_cast<qreal>(capture.previewSize.width());
   const qreal scaleY =
@@ -544,8 +597,6 @@ QRect pixelSelection(const CaptureData &capture, const QRectF &selection) {
                  capture.source.height());
   return QRect(QPoint(left, top), QPoint(right - 1, bottom - 1));
 }
-
-} // namespace
 
 void paintAnnotation(QPainter &painter, const Annotation &annotation) {
   drawAnnotation(painter, annotation);
@@ -735,11 +786,16 @@ void paintCaptureBackground(QPainter &painter, const QRectF &bounds,
 }
 
 bool probeFocusedMonitor(MonitorInfo &monitor, QString &error) {
+  if (qEnvironmentVariableIsEmpty("SWAYSOCK")) {
+    error = QStringLiteral("Sway IPC socket not found (SWAYSOCK is unset)");
+    return false;
+  }
   const ProcessResult monitors =
-      runProcess(QStringLiteral("hyprctl"),
-                 {QStringLiteral("monitors"), QStringLiteral("-j")});
+      runProcess(QStringLiteral("swaymsg"),
+                 {QStringLiteral("-t"), QStringLiteral("get_outputs"),
+                  QStringLiteral("-r")});
   if (!monitors.finished || monitors.exitCode != 0 ||
-      !parseMonitor(monitors.output, monitor, error)) {
+      !parseSwayOutputs(monitors.output, monitor, error)) {
     if (error.isEmpty())
       error = QString::fromUtf8(monitors.error).trimmed();
     return false;
@@ -756,14 +812,15 @@ bool captureMonitorPixels(const MonitorInfo &monitor, CaptureData &capture,
     return false;
   }
 
-  // Window discovery is independent of the screen grab, so let the hyprctl
+  // Window discovery is independent of the screen grab, so let the Sway IPC
   // round trip overlap the in-process output capture.
-  QProcess clients;
+  QProcess tree;
   if (includeWindows) {
-    clients.setProcessChannelMode(QProcess::SeparateChannels);
-    clients.start(QStringLiteral("hyprctl"),
-                  {QStringLiteral("clients"), QStringLiteral("-j")});
-    clients.closeWriteChannel();
+    tree.setProcessChannelMode(QProcess::SeparateChannels);
+    tree.start(QStringLiteral("swaymsg"),
+               {QStringLiteral("-t"), QStringLiteral("get_tree"),
+                QStringLiteral("-r")});
+    tree.closeWriteChannel();
   }
 
   const QString testCapture = qEnvironmentVariable("OMASNAP_TEST_CAPTURE");
@@ -783,11 +840,15 @@ bool captureMonitorPixels(const MonitorInfo &monitor, CaptureData &capture,
   capture.previewSize = geometry.size();
 
   if (includeWindows) {
-    if (!clients.waitForFinished(10000))
-      clients.kill();
-    else if (clients.exitCode() == 0)
+    if (!tree.waitForFinished(10000)) {
+      tree.kill();
+    } else if (tree.exitCode() == 0) {
+      QString treeError;
       capture.windows =
-          parseWindows(clients.readAllStandardOutput(), capture.monitor);
+          parseSwayTree(tree.readAllStandardOutput(), capture.monitor, treeError);
+      if (!treeError.isEmpty())
+        qWarning().noquote() << treeError;
+    }
   }
   return true;
 }
@@ -802,7 +863,7 @@ bool captureFocusedMonitor(CaptureData &capture, bool includeWindows,
 QImage renderCapture(const CaptureData &capture, const QRectF &selection,
                      const QVector<Annotation> &annotations,
                      BackgroundStyle backgroundStyle) {
-  const QRect pixels = pixelSelection(capture, selection);
+  const QRect pixels = sourcePixelRect(capture, selection);
   if (pixels.isEmpty())
     return {};
 
@@ -812,9 +873,9 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
       capture.source.width() / static_cast<qreal>(capture.previewSize.width());
   const qreal sourceScaleY =
       capture.source.height() / static_cast<qreal>(capture.previewSize.height());
-  const bool highDpi = capture.monitor.scale > 1.0;
-  const qreal scaleX = highDpi ? capture.monitor.scale : sourceScaleX;
-  const qreal scaleY = highDpi ? capture.monitor.scale : sourceScaleY;
+  const qreal scaleX = sourceScaleX;
+  const qreal scaleY = sourceScaleY;
+  const bool highDpi = sourceScaleX > 1.0 || sourceScaleY > 1.0;
   const QPointF sourceOriginOffset(
       selection.left() * sourceScaleX - pixels.left(),
       selection.top() * sourceScaleY - pixels.top());
@@ -890,7 +951,7 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
 
 QImage renderSelectionBase(const CaptureData &capture, const QRectF &selection,
                            const QSize &targetSize) {
-  const QRect pixels = pixelSelection(capture, selection);
+  const QRect pixels = sourcePixelRect(capture, selection);
   if (pixels.isEmpty() || targetSize.isEmpty())
     return {};
   QImage cropped = capture.source.copy(pixels).convertToFormat(
@@ -1577,28 +1638,13 @@ QString recognizeText(const QImage &image, QString &error) {
   return text;
 }
 
-QString shellQuote(QString value) {
-  value.replace('\'', QStringLiteral("'\"'\"'"));
-  return QStringLiteral("'%1'").arg(value);
-}
-
 void sendCaptureNotification(const QString &message, const QString &imagePath) {
-  QStringList arguments{QStringLiteral("-g"), QStringLiteral(""),
-                        QStringLiteral("--app-name"), QStringLiteral("omasnap"),
-                        message};
-  if (!imagePath.isEmpty()) {
-    const QString imageUrl =
-        QUrl::fromLocalFile(imagePath).toString(QUrl::FullyEncoded);
-    QString omasnap = QDir(QCoreApplication::applicationDirPath())
-                          .filePath(QStringLiteral("omasnap"));
-    if (!QFileInfo::exists(omasnap))
-      omasnap = QStringLiteral("omasnap");
-    arguments << QStringLiteral("Click to edit") << QStringLiteral("--image")
-              << imagePath << QStringLiteral("--exec")
-              << QStringLiteral("%1 %2").arg(shellQuote(omasnap),
-                                             shellQuote(imageUrl));
-  }
-  arguments << QStringLiteral("-t") << QStringLiteral("4500");
-  QProcess::startDetached(QStringLiteral("omarchy-notification-send"),
-                          arguments);
+  QStringList arguments{QStringLiteral("--app-name"), QStringLiteral("omasnap"),
+                        QStringLiteral("--expire-time"),
+                        QStringLiteral("4500")};
+  if (!imagePath.isEmpty())
+    arguments << QStringLiteral("--hint")
+              << QStringLiteral("string:image-path:%1").arg(imagePath);
+  arguments << QStringLiteral("Omasnap") << message;
+  QProcess::startDetached(QStringLiteral("notify-send"), arguments);
 }

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 
+#include <QByteArray>
 #include <QPainterPath>
 #include <QColor>
 #include <QImage>
@@ -23,7 +24,8 @@ struct MonitorInfo {
   QRect geometry;
   QSize pixelSize;
   qreal scale = 1.0;
-  int workspaceId = 0;
+  QString workspace;
+  QString transform;
 };
 
 struct WindowTarget {
@@ -114,10 +116,15 @@ enum class AnnotationLayer { Redaction, Default };
 [[nodiscard]] QFont annotationTextFont(qreal size);
 /**
  * Discovers the focused monitor (name, geometry, scale). Fast: only one
- * `hyprctl monitors` call. Safe to call on the main thread to position the
+ * Sway IPC call. Safe to call on the main thread to position the
  * overlay after the pixel capture has already produced a frozen frame.
  */
 [[nodiscard]] bool probeFocusedMonitor(MonitorInfo &monitor, QString &error);
+[[nodiscard]] bool parseSwayOutputs(const QByteArray &json,
+                                    MonitorInfo &monitor, QString &error);
+[[nodiscard]] QVector<WindowTarget> parseSwayTree(const QByteArray &json,
+                                                  const MonitorInfo &monitor,
+                                                  QString &error);
 /**
  * Captures the focused monitor's pixels onto the given monitor, and its window
  * list when `includeWindows` is set. Window discovery runs alongside the screen
@@ -145,6 +152,9 @@ enum class AnnotationLayer { Redaction, Default };
 /** Returns an upright image for captured Wayland buffer contents. */
 [[nodiscard]] QImage normalizeWaylandCapture(const QImage &image,
                                              std::uint32_t transform);
+/** Maps logical selection bounds to the measured native capture pixels. */
+[[nodiscard]] QRect sourcePixelRect(const CaptureData &capture,
+                                    const QRectF &selection);
 [[nodiscard]] QImage renderCapture(const CaptureData &capture,
                                    const QRectF &selection,
                                    const QVector<Annotation> &annotations,
@@ -203,7 +213,5 @@ void prunePinnedSnapshots();
 [[nodiscard]] bool saveTemporarySnapshot(const QImage &image, QString path,
                                          QString &error, int quality = -1);
 [[nodiscard]] QString recognizeText(const QImage &image, QString &error);
-/** Quotes a string for a shell argument passed to omarchy-notification-send. */
-[[nodiscard]] QString shellQuote(QString value);
 void sendCaptureNotification(const QString &message,
                              const QString &imagePath = {});

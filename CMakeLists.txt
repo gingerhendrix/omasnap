@@ -99,11 +99,16 @@ qt_add_executable(omasnap-smoke
   tests/pin-lifecycle-smoke.hpp
   tests/pin-layout-smoke.cpp
   tests/pin-layout-smoke.hpp
+  tests/sway-capture-smoke.cpp
+  tests/sway-capture-smoke.hpp
 )
 target_include_directories(omasnap-smoke PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
 )
 target_compile_options(omasnap-smoke PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(omasnap-smoke PRIVATE
+  OMASNAP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+)
 target_link_libraries(omasnap-smoke PRIVATE omasnap-core Qt6::Test)
 add_test(NAME omasnap-smoke COMMAND omasnap-smoke "${CMAKE_CURRENT_BINARY_DIR}/omasnap-smoke-output")
 set_tests_properties(omasnap-smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
