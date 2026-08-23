@@ -276,20 +276,35 @@ bool parseSwayOutputs(const QByteArray &json, MonitorInfo &monitor,
     const QJsonObject rect = object.value(QStringLiteral("rect")).toObject();
     const QJsonObject mode =
         object.value(QStringLiteral("current_mode")).toObject();
+    const QString name = object.value(QStringLiteral("name")).toString();
+    const QRect geometry = jsonRect(rect);
     int pixelWidth = mode.value(QStringLiteral("width")).toInt();
     int pixelHeight = mode.value(QStringLiteral("height")).toInt();
+    if (name.isEmpty()) {
+      error = QStringLiteral("Focused Sway output is missing a name");
+      return false;
+    }
+    if (geometry.size().isEmpty()) {
+      error = QStringLiteral("Focused Sway output %1 has invalid logical geometry")
+                  .arg(name);
+      return false;
+    }
+    if (pixelWidth <= 0 || pixelHeight <= 0) {
+      error = QStringLiteral("Focused Sway output %1 has no valid current mode")
+                  .arg(name);
+      return false;
+    }
     monitor.transform = object.value(QStringLiteral("transform")).toString();
     if (hasQuarterTurn(monitor.transform))
       std::swap(pixelWidth, pixelHeight);
 
-    monitor.name = object.value(QStringLiteral("name")).toString();
-    monitor.geometry = jsonRect(rect);
+    monitor.name = name;
+    monitor.geometry = geometry;
     monitor.pixelSize = {pixelWidth, pixelHeight};
     monitor.scale = object.value(QStringLiteral("scale")).toDouble(1.0);
     monitor.workspace =
         object.value(QStringLiteral("current_workspace")).toString();
-    return !monitor.name.isEmpty() && !monitor.geometry.size().isEmpty() &&
-           !monitor.pixelSize.isEmpty();
+    return true;
   }
 
   error = QStringLiteral("Sway did not report a focused output");

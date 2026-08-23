@@ -17,6 +17,19 @@ bool expect(bool condition, const QString &message, QString &error) {
   error = message;
   return false;
 }
+
+bool expectInvalidOutput(const QByteArray &json, const QString &detail,
+                         QString &error) {
+  MonitorInfo monitor;
+  QString parseError;
+  if (!parseSwayOutputs(json, monitor, parseError) &&
+      parseError.contains(detail))
+    return true;
+  error = QStringLiteral("Incomplete focused output error was: %1")
+              .arg(parseError.isEmpty() ? QStringLiteral("<empty>")
+                                        : parseError);
+  return false;
+}
 } // namespace
 
 bool runSwayCaptureSmoke(QString &error) {
@@ -33,6 +46,20 @@ bool runSwayCaptureSmoke(QString &error) {
           QStringLiteral(
               "Focused fractional-scale Sway output was parsed incorrectly"),
           error))
+    return false;
+
+  if (!expectInvalidOutput(
+          QByteArrayLiteral(
+              R"json([{"focused":true,"rect":{"x":0,"y":0,"width":10,"height":10},"current_mode":{"width":10,"height":10}}])json"),
+          QStringLiteral("missing a name"), error) ||
+      !expectInvalidOutput(
+          QByteArrayLiteral(
+              R"json([{"name":"TEST","focused":true,"rect":{"x":0,"y":0,"width":0,"height":10},"current_mode":{"width":10,"height":10}}])json"),
+          QStringLiteral("invalid logical geometry"), error) ||
+      !expectInvalidOutput(
+          QByteArrayLiteral(
+              R"json([{"name":"TEST","focused":true,"rect":{"x":0,"y":0,"width":10,"height":10},"current_mode":{}}])json"),
+          QStringLiteral("no valid current mode"), error))
     return false;
 
   const QByteArray rotatedJson = QByteArrayLiteral(R"json([
