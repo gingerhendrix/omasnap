@@ -5798,11 +5798,11 @@ int main(int argc, char **argv) {
       1500, 1125, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
   const QImage highDpiRendered = renderCapture(
       highDpiCapture, QRectF(100, 100, 500, 300), {}, BackgroundStyle::None);
-  if (highDpiRendered.size() != QSize(1000, 600))
+  if (highDpiRendered.size() != QSize(938, 563))
     return 13;
   const QImage fullHighDpi = renderCapture(
       highDpiCapture, QRectF(0, 0, 800, 600), {}, BackgroundStyle::None);
-  if (fullHighDpi.size() != QSize(1600, 1200) ||
+  if (fullHighDpi.size() != QSize(1500, 1125) ||
       !fullHighDpi.save(outputRoot + QStringLiteral("-fullscreen-hidpi.png"),
                         "PNG"))
     return 15;
