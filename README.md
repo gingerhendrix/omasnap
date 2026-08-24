@@ -1,3 +1,5 @@
+> **Fork note:** This is an AI-maintained fork of [tobi’s Omasnap](https://github.com/tobi/omasnap) for vanilla Arch Linux and Sway.
+
 # Omasnap for Sway
 
 A native Wayland screenshot and annotation overlay adapted for Sway.
