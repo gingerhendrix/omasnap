@@ -29,7 +29,6 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 
-#include <QUrl>
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -2588,27 +2587,21 @@ QString recognizeText(const QImage &image, QString &error) {
 
 QStringList captureNotificationArguments(const QString &message,
                                          const QString &imagePath) {
-  QStringList arguments{QStringLiteral("-g"), QStringLiteral(""),
-                        QStringLiteral("--app-name"), QStringLiteral("omasnap"),
-                        QStringLiteral("-t"), QStringLiteral("4500"), message};
-  if (!imagePath.isEmpty()) {
-    const QString imageUrl =
-        QUrl::fromLocalFile(imagePath).toString(QUrl::FullyEncoded);
-    QString omasnap = QDir(QCoreApplication::applicationDirPath())
-                          .filePath(QStringLiteral("omasnap"));
-    if (!QFileInfo::exists(omasnap))
-      omasnap = QStringLiteral("omasnap");
-    // --exec consumes the rest of the command line as the click command's
-    // argv, which omarchy-notification-send runs without shell parsing. It
-    // must come last and be given as separate words, never one quoted string.
-    arguments << QStringLiteral("Click to edit") << QStringLiteral("--image")
-              << imagePath << QStringLiteral("--exec") << omasnap << imageUrl;
-  }
+  // notify-send runs without a shell. Each value is one argv word, so paths
+  // with spaces or quotes need no quoting. `--` keeps a message that starts
+  // with a dash from being read as an option.
+  QStringList arguments{QStringLiteral("--app-name"), QStringLiteral("omasnap"),
+                        QStringLiteral("--expire-time"),
+                        QStringLiteral("4500")};
+  if (!imagePath.isEmpty())
+    arguments << QStringLiteral("--hint")
+              << QStringLiteral("string:image-path:%1").arg(imagePath);
+  arguments << QStringLiteral("--") << QStringLiteral("Omasnap") << message;
   return arguments;
 }
 
 void sendCaptureNotification(const QString &message, const QString &imagePath) {
-  QProcess::startDetached(QStringLiteral("omarchy-notification-send"),
+  QProcess::startDetached(QStringLiteral("notify-send"),
                           captureNotificationArguments(message, imagePath));
 }
 

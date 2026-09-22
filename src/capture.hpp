@@ -415,9 +415,9 @@ bool removeEditorHandoff(const QString &path, const QString &token);
 [[nodiscard]] bool saveTemporarySnapshot(const QImage &image, QString path,
                                          QString &error, int quality = -1);
 [[nodiscard]] QString recognizeText(const QImage &image, QString &error);
-/** Builds the omarchy-notification-send argv. With an image, the click command
- *  follows --exec as separate words (program, then file URL) and nothing else
- *  comes after it, since --exec consumes the rest of the line unparsed. */
+/** Builds the freedesktop `notify-send` argv. Every value is a separate word
+ *  with no shell parsing. A saved image travels as one `image-path` hint word.
+ *  `notify-send` has no click command, so there is no reopen action. */
 [[nodiscard]] QStringList
 captureNotificationArguments(const QString &message,
                              const QString &imagePath = {});

@@ -4835,23 +4835,25 @@ bool runRecentsShelfSmoke(QApplication &application, QString &error) {
 }
 
 /**
- * omarchy-notification-send treats everything after --exec as the click
- * command's argv and runs it without shell parsing. The saved-capture
- * notification must therefore put --exec last and pass the program and the
- * file URL as separate words; a quoted single string or a trailing -t would
- * make the click try to run a program that does not exist.
+ * notify-send runs without shell parsing, so every value must be its own argv
+ * word. A saved path with spaces or quotes stays inside one image-path hint,
+ * and `--` must precede the summary and body so they are never read as
+ * options. notify-send has no click command, so no --exec may appear.
  */
 bool runNotificationArgvCheck(QString &error) {
   const QStringList plain =
       captureNotificationArguments(QStringLiteral("Screenshot copied"));
+  const qsizetype plainEnd = plain.indexOf(QStringLiteral("--"));
   if (plain.contains(QStringLiteral("--exec")) ||
-      plain.contains(QStringLiteral("--image"))) {
-    error = QStringLiteral("image-less notification carried --exec/--image");
+      plain.contains(QStringLiteral("--hint"))) {
+    error = QStringLiteral("image-less notification carried --exec/--hint");
     return false;
   }
-  if (plain.last() != QStringLiteral("Screenshot copied") ||
-      plain.indexOf(QStringLiteral("-t")) < 0 ||
-      plain.at(plain.indexOf(QStringLiteral("-t")) + 1) !=
+  if (plainEnd < 0 || plain.size() != plainEnd + 3 ||
+      plain.at(plainEnd + 1) != QStringLiteral("Omasnap") ||
+      plain.last() != QStringLiteral("Screenshot copied") ||
+      plain.indexOf(QStringLiteral("--expire-time")) < 0 ||
+      plain.at(plain.indexOf(QStringLiteral("--expire-time")) + 1) !=
           QStringLiteral("4500")) {
     error = QStringLiteral("image-less notification argv is wrong: %1")
                 .arg(plain.join(QStringLiteral(" | ")));
@@ -4861,40 +4863,23 @@ bool runNotificationArgvCheck(QString &error) {
   const QString imagePath = QStringLiteral("/tmp/it's a/shot 1.png");
   const QStringList saved = captureNotificationArguments(
       QStringLiteral("Screenshot saved"), imagePath);
-  const qsizetype exec = saved.indexOf(QStringLiteral("--exec"));
-  if (exec < 0 || saved.size() != exec + 3) {
-    error = QStringLiteral("--exec must be followed by exactly program and "
-                           "URL, got: %1")
+  const qsizetype savedEnd = saved.indexOf(QStringLiteral("--"));
+  const qsizetype hint = saved.indexOf(QStringLiteral("--hint"));
+  if (saved.contains(QStringLiteral("--exec")) || savedEnd < 0 ||
+      saved.size() != savedEnd + 3 ||
+      saved.last() != QStringLiteral("Screenshot saved")) {
+    error = QStringLiteral("saved notification argv is wrong: %1")
                 .arg(saved.join(QStringLiteral(" | ")));
     return false;
   }
-  const QString &program = saved.at(exec + 1);
-  const QString &url = saved.at(exec + 2);
-  if (program.isEmpty() || program.contains(QStringLiteral("'")) ||
-      program.contains(QStringLiteral(" ")) ||
-      !program.endsWith(QStringLiteral("omasnap"))) {
-    error = QStringLiteral("click program is not a bare omasnap path: %1")
-                .arg(program);
+  if (hint < 0 || hint > savedEnd ||
+      saved.at(hint + 1) !=
+          QStringLiteral("string:image-path:%1").arg(imagePath)) {
+    error = QStringLiteral("image-path hint does not carry the saved path "
+                           "as one word: %1")
+                .arg(saved.join(QStringLiteral(" | ")));
     return false;
   }
-  if (url != QUrl::fromLocalFile(imagePath).toString(QUrl::FullyEncoded) ||
-      !url.startsWith(QStringLiteral("file:///")) ||
-      QUrl(url).toLocalFile() != imagePath) {
-    error = QStringLiteral("click URL does not round-trip the image: %1")
-                .arg(url);
-    return false;
-  }
-  const qsizetype timeout = saved.indexOf(QStringLiteral("-t"));
-  if (timeout < 0 || timeout > exec) {
-    error = QStringLiteral("-t must precede --exec");
-    return false;
-  }
-  const qsizetype image = saved.indexOf(QStringLiteral("--image"));
-  if (image < 0 || saved.at(image + 1) != imagePath) {
-    error = QStringLiteral("--image does not carry the saved path");
-    return false;
-  }
-  sendCaptureNotification(QStringLiteral("smoke"));
   return true;
 }
 
@@ -10220,6 +10205,21 @@ int main(int argc, char **argv) {
   if (!smokeShelf.isValid())
     return 18;
   qputenv("OMASNAP_RECENT_DIR", smokeShelf.path().toUtf8());
+
+  // Saved-capture flows notify through notify-send, which is present on a
+  // Sway desktop. Shadow it with a no-op so the suite never reaches the
+  // developer's notification daemon.
+  QTemporaryDir quietCommands;
+  QFile quietNotify(quietCommands.filePath(QStringLiteral("notify-send")));
+  if (!quietCommands.isValid() ||
+      !quietNotify.open(QIODevice::WriteOnly) ||
+      quietNotify.write("#!/bin/sh\nexit 0\n") < 0 ||
+      !quietNotify.setPermissions(QFileDevice::ReadOwner |
+                                  QFileDevice::WriteOwner |
+                                  QFileDevice::ExeOwner))
+    return 18;
+  quietNotify.close();
+  qputenv("PATH", quietCommands.path().toUtf8() + ':' + qgetenv("PATH"));
 
   // Live output capture against a real compositor (the smoke's own Wayland
   // connection; Qt's platform does not matter): open a session on the named
