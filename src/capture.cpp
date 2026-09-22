@@ -448,7 +448,7 @@ void collectSwayViews(const QJsonObject &node, const MonitorInfo &monitor,
 
   for (const QString &key : {QStringLiteral("nodes"),
                              QStringLiteral("floating_nodes")}) {
-    for (const QJsonValue &child : node.value(key).toArray())
+    for (const QJsonValue child : node.value(key).toArray())
       collectSwayViews(child.toObject(), monitor, output, workspace, windows);
   }
 }

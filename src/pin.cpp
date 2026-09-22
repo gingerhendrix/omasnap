@@ -141,7 +141,7 @@ CompositorLayout compositorMonitors() {
 CompositorMonitor compositorMonitor(const CompositorLayout &layout,
                                     const QPoint &point = {}, bool usePoint = false) {
   CompositorMonitor focused;
-  for (const QJsonValue &value : layout.outputs) {
+  for (const QJsonValue value : layout.outputs) {
     const QJsonObject monitor = value.toObject();
     // Sway lists disabled outputs too; they have no usable geometry.
     if (!monitor.value(QStringLiteral("active")).toBool(true))

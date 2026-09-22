@@ -40,9 +40,9 @@ void collectViews(const QJsonObject &node, bool floating,
                        node.value(QStringLiteral("sticky")).toBool(),
                        node.value(QStringLiteral("focused")).toBool()});
   }
-  for (const QJsonValue &child : node.value(QStringLiteral("nodes")).toArray())
+  for (const QJsonValue child : node.value(QStringLiteral("nodes")).toArray())
     collectViews(child.toObject(), floating, windows);
-  for (const QJsonValue &child :
+  for (const QJsonValue child :
        node.value(QStringLiteral("floating_nodes")).toArray())
     collectViews(child.toObject(), true, windows);
 }
@@ -73,7 +73,7 @@ bool swayCommandSucceeded(const QByteArray &reply) {
   const QJsonArray results = QJsonDocument::fromJson(reply).array();
   if (results.isEmpty())
     return false;
-  for (const QJsonValue &result : results) {
+  for (const QJsonValue result : results) {
     if (!result.toObject().value(QStringLiteral("success")).toBool())
       return false;
   }

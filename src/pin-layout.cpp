@@ -302,7 +302,7 @@ QRect pinMonitorWorkArea(const QJsonObject &output,
   const QString name = output.value(QStringLiteral("name")).toString();
   // The visible workspace's rect is the output less every bar's exclusive
   // zone, on any edge.
-  for (const QJsonValue &value : workspaces) {
+  for (const QJsonValue value : workspaces) {
     const QJsonObject workspace = value.toObject();
     if (!workspace.value(QStringLiteral("visible")).toBool() ||
         workspace.value(QStringLiteral("output")).toString() != name)
