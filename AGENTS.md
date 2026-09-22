@@ -1,7 +1,7 @@
 # Omasnap — Agent Guide
 
-Omasnap is a super fast, native Wayland screenshot and annotation overlay,
-built for [Omarchy](https://omarchy.org) on Hyprland. It captures region,
+Omasnap is a super fast, native Wayland screenshot and annotation overlay.
+This fork is built for Sway on vanilla Arch Linux. It captures region,
 window, or full monitor (plus a scrolling-region mode that stitches a taller
 page into one image), then copies it and opens a floating compositor preview.
 The preview fades after 10 seconds of idle time unless explicitly kept with its
@@ -37,27 +37,23 @@ change that touches the principle, not just this summary.
   render time so nothing recoverable leaks into an export, while remaining
   a normal, undoable log entry until you export. See
   [docs/editing-model.md](docs/editing-model.md).
-- **Minimally configurable — pre-configured to be right, like Omarchy.**
+- **Minimally configurable — pre-configured to be right.**
   No settings UI, no wizards, no onboarding. The defaults are the product;
   a config key is a narrow escape hatch for a real divergent need (where to
   save, what to name it, preset colors), never a general mechanism. Adding
   a new key needs the same justification the existing ones had, not "this
   would be nice to expose."
 - **Speed first.** Instant capture, annotate, copy. No startup bloat.
-- **Wayland only, Hyprland only.** Monitor/window discovery, input
-  injection quirks, and notification conventions are all Hyprland-specific
-  on purpose. Code that happens to also run on another wlroots compositor,
-  because it stands on a real Wayland protocol rather than a Hyprland
-  shortcut, is a fine accident — it is not a target, not tested, and not a
-  bug magnet we chase. A PR that supports another compositor (niri, KDE,
-  etc.) is welcome **only if it adds zero complexity to the Hyprland
-  path** — no compositor branching, no backend abstraction, no new
-  dependency pulled in just for it. Otherwise it's rejected; fork it
-  instead. No X11, no macOS/Windows. See
+- **Wayland only, Sway only.** Output/window discovery, pin placement, and
+  the windowed editor use Sway IPC through `swaymsg`
+  (`src/capture.cpp`, `src/sway-ipc.cpp`). Do not reintroduce `hyprctl`,
+  Hyprland Lua rules, or Omarchy tools on any path. Code that also runs on
+  another wlroots compositor because it stands on a real Wayland protocol
+  is a fine accident, not a target. No X11, no macOS/Windows. See
   [docs/platform-scope.md](docs/platform-scope.md).
 - **Lean, learned dependencies.** The dependency set is Qt6 + LayerShellQt +
-  wayland-client, plus shelling out to a few existing Omarchy tools
-  (`hyprctl`, `wl-copy`/`wl-paste`, `tesseract`, `omarchy-notification-send`)
+  wayland-client, plus shelling out to a few existing Arch/Sway tools
+  (`swaymsg`, `wl-copy`/`wl-paste`, `tesseract`, `notify-send`)
   instead of linking their equivalents in-process. Know this list before
   proposing an addition to it. See [docs/dependencies.md](docs/dependencies.md).
 - **Single small binary.** Everything (capture, editor, pin mode, scroll
@@ -67,8 +63,8 @@ change that touches the principle, not just this summary.
   formats, or internals whenever it keeps the code simpler or the tool
   faster. Do not add compatibility shims, deprecation aliases, or migration
   code.
-- **Omarchy aesthetics.** `omarchy-notification-send` when available,
-  `OMASNAP_OCR_LANGS`/`OMARCHY_OCR_LANGS` fallback for OCR languages,
+- **Minimal aesthetics.** Freedesktop `notify-send` notifications,
+  `OMASNAP_OCR_LANGS`, then the legacy `OMARCHY_OCR_LANGS`, for OCR languages,
   minimal vector-drawn icons (no icon-theme dependency), the bundled Neucha
   font. Chrome text uses `chromeFont()`/`chromeMonoFont()`
   (`src/overlay-chrome.cpp`), pinned in code, and `main()` installs
@@ -91,18 +87,19 @@ change that touches the principle, not just this summary.
 | `src/scroll-inject.cpp/.hpp` | Auto-scroll wheel injection (uinput / `zwlr_virtual_pointer_v1`) |
 | `src/auto-capture.cpp/.hpp`, `src/stitch.cpp/.hpp` | Pure, offline-testable frame classification and stitching |
 | `src/stitch-replay.cpp` | Standalone tool: replay a dumped frame directory through the stitcher with no compositor |
-| `src/surface-capture.cpp` | In-process output/window capture via `ext-image-copy-capture` |
+| `src/surface-capture.cpp` | In-process output capture via `ext-image-copy-capture` |
 | `src/cut.cpp/.hpp` | Cut-band tool: remove a strip and collapse the gap |
 | `src/recent-snaps.cpp/.hpp` | The recents shelf: shelving/reopening working documents |
 | `src/output-config.cpp/.hpp`, `src/palette-config.cpp/.hpp` | The optional `omasnap.conf` INI: output destination/filename, color presets |
 | `src/pin.cpp/.hpp`, `src/pin-file.cpp/.hpp`, `src/pin-layout.cpp/.hpp` | Floating pinned captures, their files, and compositor placement |
+| `src/sway-ipc.cpp/.hpp` | Bounded `swaymsg` runner, command-reply checks, and the flat Sway view list used by pins and the windowed editor |
 | `src/pin-expiry.cpp/.hpp` | Preview countdown, interaction pauses, and fade |
 | `src/icons.cpp/.hpp` | Vector icon renderer for toolbar and pin controls |
 | `src/cli-path.cpp/.hpp` | Command-line image target resolution |
 | `src/eyedropper.cpp/.hpp` | Display-to-source color sampling |
 | `tests/*-smoke.cpp/.hpp` | Headless Qt Test coverage: offscreen region clicks, async capture, single-instance handover, stitching fixtures |
 | `docs/` | Longer writeups of the principles above — read before changing behavior they cover |
-| `install-omarchy` | Omarchy installer (deps via `omarchy-pkg-add`, installs to `~/.local`) |
+| `install-arch` | Arch/Sway dependency-checking installer (installs to `~/.local`) |
 | `CMakeLists.txt` | Build definition; **the version lives here** (`project(omasnap VERSION ...)`) |
 
 ## Build and verify
@@ -123,7 +120,8 @@ Always run `make check` after behavioral changes. CI
 push and PR.
 
 Dependencies (Arch): `base-devel cmake ninja pkgconf qt6-base layer-shell-qt
-wayland wayland-protocols wl-clipboard tesseract tesseract-data-eng`. See
+wayland wayland-protocols sway wl-clipboard libnotify tesseract
+tesseract-data-eng`. See
 [docs/dependencies.md](docs/dependencies.md) before adding to this list.
 
 ## Release process
@@ -137,14 +135,9 @@ wayland wayland-protocols wl-clipboard tesseract tesseract-data-eng`. See
    attaches the build artifact to the release automatically.
    Copy the new changelog section into the GitHub release notes so users
    can read the changes alongside the download.
-4. **Update omarchy-pkgs on every new version release.** In the
-   [omarchy-pkgs](https://github.com/omacom-io/omarchy-pkgs) fork
-   (`pkgbuilds/omasnap/`):
-   - Set `pkgver` in `PKGBUILD` to the new version.
-   - Replace `sha256sums` with the hash of
-     `https://github.com/tobi/omasnap/archive/refs/tags/v<version>.tar.gz`
-     (`curl -sL <url> | sha256sum`).
-   - Commit on a branch and open a PR to `omacom-io/omarchy-pkgs`.
+
+Fork syncs rebuild the Sway line on an upstream tag by adapting behaviour,
+not by replaying old patches.
 
 See `README.md` for user-facing features, keybindings, and install
 instructions — keep it in sync when behavior changes.

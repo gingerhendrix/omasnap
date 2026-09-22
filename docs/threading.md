@@ -106,13 +106,13 @@ purpose every time, since nothing enforces it automatically.
 from the UI thread when auto-scroll starts or Continues
 (`ScrollCapturePanel::startCapture`/`continueCapture` in
 `src/scroll-capture.cpp`), and it deliberately probes the injection
-backends before returning — including `hyprctl getoption
-input:natural_scroll`, a subprocess spawn with up to a 2-second
-`waitForFinished`. That's a real, if brief and infrequent (once per
-auto-scroll start, not per frame), block on the UI thread. It hasn't been
+backends before returning, including the wlr virtual-pointer connection.
+On Sway there is no natural-scroll subprocess query, so the probe spawns
+nothing. It is still brief UI-thread work (once per auto-scroll start, not
+per frame). It hasn't been
 moved to a worker because the auto-scroll injector is the most delicate,
 most recently hardened part of the codebase and depends on live
-Hyprland/Wayland state that the offline smoke suite cannot exercise —
+compositor/Wayland state that the offline smoke suite cannot exercise —
 changing its threading needs a live re-verification pass, not just a
 green `make check`. Fix it with the same worker/watcher shape above
 (`QtConcurrent::run` wrapping the whole call, a small watcher applying the
@@ -131,13 +131,13 @@ earlier in the same call.
 
 See also [editing-model.md](editing-model.md) for what state a background
 render is allowed to read, and [dependencies.md](dependencies.md) for the
-processes (`tesseract`, `wl-copy`/`wl-paste`, `hyprctl`) these workers spawn.
+processes (`tesseract`, `wl-copy`/`wl-paste`, `swaymsg`) these workers spawn.
 
 ## Floating pins
 
 Pin placement, compositor polling, and move dispatches run on a single worker
 per pin process. The GUI applies completed geometry snapshots through a watcher;
-it never waits for `hyprctl` during a drag. A runtime lock serializes placement
+it never waits for `swaymsg` during a drag. A runtime lock serializes placement
 across pin processes, with short-lived target reservations covering compositor
 animation latency. The initial monitor query uses the same worker pool; a fallback frame maps
 immediately and adopts the display-shaped size when the query finishes.

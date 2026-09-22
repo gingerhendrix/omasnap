@@ -1,8 +1,11 @@
-# Omasnap
+> **Fork note:** This is an AI-maintained fork of [Omasnap](https://github.com/omacom/omasnap) for vanilla Arch Linux and Sway. It tracks upstream v1.21.0.
 
-See the [changelog](CHANGELOG.md) for release highlights and unreleased changes.
+# Omasnap for Sway
 
-A native Wayland screenshot and annotation overlay designed for Omarchy and Hyprland.
+See the [changelog](CHANGELOG.md) for upstream release highlights. Sway-specific
+behaviour and its limits are described under [Platform scope](#platform-scope).
+
+A native Wayland screenshot and annotation overlay adapted for Sway.
 It captures the focused monitor before mapping an exclusive layer-shell surface, so the
 editor never appears in its own screenshot. The editor retains annotations as movable,
 resizable vector layers and preserves the monitor's native pixels on scaled displays.
@@ -53,7 +56,7 @@ pause its countdown; only the pin button or `Ctrl+P` keeps it on screen.
   mesh-gradient backdrops, and rendered drop shadows on standard backdrop cards.
 - Cut tool: drag across a band of the image to remove it and collapse the gap, with a
   live preview and dashed seam marker while dragging; annotations shift to follow.
-- Pin a finished capture as a bottom-right floating compositor window, launched
+- Pin a finished capture as a bottom-right floating, sticky Sway window, launched
   from the same `omasnap` executable and visible on every workspace.
   Pins form a compact deck with the recents shelf's alternating tilt while
   idle; hover to straighten and fan them out.
@@ -74,87 +77,85 @@ pause its countdown; only the pin button or `Ctrl+P` keeps it on screen.
 
 ## Platform scope
 
-The supported target is **Wayland + Hyprland**, with Omarchy as the primary integration.
-The renderer, layer surface, clipboard, and monitor capture use Wayland protocols;
-monitor/window discovery currently calls `hyprctl`. The focused output is captured
-in-process through `ext-image-copy-capture` before the layer maps. Selection displays
-that captured frame, while the annotation editor uses
-a translucent layer scrim over the live desktop and draws only the selected capture.
-Another Wayland compositor could support the application after supplying equivalent
-monitor and window discovery; generic Wayland support is not claimed by 1.0.
+The supported target is **Wayland + Sway**. Focused-output and visible-window discovery
+use Sway IPC through `swaymsg`. The focused output is captured in-process through
+`ext-image-copy-capture` before the layer maps. Region and full-output selection use
+that frozen frame directly. Window selection recursively reads Sway's tiled and
+floating container tree, supports named workspaces, clips the selected container to
+the focused output, and crops the same frozen frame. This visible-window crop
+intentionally includes decorations and any overlapping content. It needs no
+foreign-toplevel capture source, which Sway 1.11 does not provide.
+
+Pins and the windowed editor are ordinary Sway windows, placed through `swaymsg`:
+
+- Pins float, stay sticky on every workspace, and have no border. Omasnap registers a
+  `no_focus` rule and a `for_window` rule for pin windows once per Sway session, so a
+  new pin never takes focus. It does not edit your Sway configuration.
+- The work area for the stack is the visible workspace rectangle, so bars on any edge
+  are respected.
+- Sway has no always-on-top state for floating windows. A focused floating window
+  can cover the pins until a pin is hovered again.
+- Sway has no cursor-position query. The fan closes when the pointer leaves the
+  pin that opened it and does not enter another card within a short delay.
+- After `swaymsg reload`, Sway forgets the runtime rules. Pins still float and stick,
+  but they can take focus when created until the next Sway session.
+- The windowed editor is floated, sized, and centered after it maps. It can show
+  tiled for one frame.
+- Auto scroll capture always uses the wlr virtual pointer. Sway applies natural
+  scrolling per input device, so the policy for an injected uinput mouse is unknown.
 
 Runtime commands used by the application:
 
-- `hyprctl`
+- `swaymsg` (with `SWAYSOCK` set by Sway)
 - `wl-copy` and `wl-paste`
 - `tesseract`
-- `omarchy-notification-send` when available; saved captures include a thumbnail and
-  reopen in Omasnap when clicked. Notification failure does not invalidate output.
+- `notify-send`; saved captures include an image hint. There is no click-to-edit
+  action; reopen a saved file with `omasnap <path>`. Notification failure does not
+  invalidate output.
 
-## Install on Omarchy
-
-Clone the repository and run the Omarchy installer:
-
-```bash
-git clone https://github.com/tobi/omasnap.git
-cd omasnap
-./install-omarchy
-```
-
-The installer uses Omarchy's package helper for missing dependencies, builds in
-`~/.cache/omasnap`, and installs under `~/.local`. It does not modify
-Hyprland configuration.
-
-Pinned-window placement uses the Lua dispatcher on Omarchy’s Hyprland.
-
-### Hyprland binding
-
-Paste this into a Lua config loaded after `require("default.hypr.omarchy")`:
-
-```lua
-hl.unbind("PRINT")
-hl.unbind("F12")
-hl.unbind("ALT + SHIFT + 4")
-
-o.bind("PRINT", "Screenshot", "omasnap")
-o.bind("F12", "Screenshot", "omasnap")
-o.bind("ALT + SHIFT + 4", "Screenshot", "omasnap")
-
-hl.layer_rule({
-  match = { namespace = "^omasnap$" },
-  no_anim = true,
-  animation = "none",
-  no_screen_share = true,
-})
-```
-
-Each of these keys toggles: the first press opens the overlay, the next press dismisses it.
-
-Apply and verify:
-
-```bash
-hyprctl reload
-hyprctl configerrors
-hyprctl binds -j | jq -c \
-  '[.[] | select(.description == "Screenshot") | {modmask,key,description}]'
-```
-
-`omarchy plugin add` is intentionally not used. Omarchy plugins are Quickshell QML
-extensions; they do not install native executables or system packages.
-
-Set `OMASNAP_PREFIX` before running `install-omarchy` to use a prefix other than
-`~/.local`.
-
-### Manual Arch Linux build
+## Install on Arch Linux and Sway
 
 Install the complete build/runtime dependency set:
 
 ```bash
 sudo pacman -S --needed \
   base-devel cmake ninja pkgconf qt6-base layer-shell-qt \
-  wayland wayland-protocols hyprland wl-clipboard \
+  wayland wayland-protocols sway wl-clipboard libnotify \
   tesseract tesseract-data-eng
 ```
+
+From a checkout of this repository's `sway` branch, run the dependency-checking
+Arch installer:
+
+```bash
+./install-arch
+```
+
+The installer does not invoke a package manager or edit Sway configuration. It builds
+with Ninja under `${XDG_CACHE_HOME:-~/.cache}/omasnap-sway/`, in a build folder keyed
+to the checkout path, and installs under `~/.local`. Set `OMASNAP_PREFIX` to choose
+another prefix.
+
+### Sway bindings
+
+Add bindings like these to `~/.config/sway/config`:
+
+```text
+bindsym Print exec omasnap
+bindsym $mod+Print exec omasnap --capture-fullscreen
+bindsym $mod+Shift+Print exec omasnap --capture-window
+```
+
+Each of these keys toggles: the first press opens the overlay, the next press dismisses it.
+
+Reload and verify:
+
+```bash
+swaymsg reload
+swaymsg -t get_outputs -r | jq '.[] | select(.focused) | {name,rect,scale,transform,current_workspace}'
+```
+
+### Manual build
 
 Build and install:
 
@@ -175,8 +176,8 @@ The install step places:
 - `~/.local/share/licenses/omasnap/Inter-OFL.txt`
 - `~/.local/share/licenses/omasnap/Lucide-ISC.txt`
 
-Launch Omasnap from the application launcher by searching for its name, or use
-the screenshot keybindings above.
+The desktop entry is visible to application launchers, so you can start a capture
+by searching for Omasnap, or use the Sway bindings above.
 
 Ensure `~/.local/bin` is on `PATH`, then verify the installed CLI:
 
@@ -251,8 +252,7 @@ the overlay that is still on screen.
 
 Editing an existing image is never cancelled this way: `--file`, `--clipboard`, or an
 image path stops the running instance, waits up to two seconds for the lock, and opens the
-editor on that image. That is how a pin's Edit button and a notification click always land
-in the editor.
+editor on that image. That is how a pin's Edit button always lands in the editor.
 
 A lock left behind by a crashed instance is removed and reclaimed. A lock file that cannot
 be read or written at all is reported on stderr instead of being mistaken for a running
@@ -286,10 +286,9 @@ omasnap --clipboard
 The clipboard must offer readable image data. Text-only clipboard contents return an
 error instead of opening an empty editor.
 
-File URLs are accepted too. A saved capture notification's "Click to edit" action launches
-`omasnap` on the finished screenshot, so it can be reopened and re-annotated. The action is
-handed to `omarchy-notification-send` as `--exec <omasnap> <file:// URL>`, separate argv
-words after a trailing `--exec`, which the shell runs directly without shell parsing.
+File URLs are accepted too. Saved-capture notifications go through `notify-send`, which has
+no click command, so they carry the image but no reopen action. Every notification value is
+passed as its own argv word, without shell parsing.
 
 ### Recent captures
 
@@ -353,7 +352,7 @@ Filename tokens:
 |---|---|
 | `{date}` | `2026-08-23` (yyyy-MM-dd) |
 | `{time}` | `14-05-09` (HH-mm-ss) |
-| `{app}` | Slug of the app under the selection, e.g. `firefox`, `alacritty`, `nautilus` (from the Hyprland window class). Empty for fullscreen captures, file edits, and when nothing is known — the separator before or after it is dropped too, so the default pattern gives `screenshot-2026-08-23_14-05-09.png`. |
+| `{app}` | Slug of the app under the selection, e.g. `firefox`, `alacritty`, `nautilus` (from the Sway `app_id`, or the X11 class of an Xwayland window). Empty for fullscreen captures, file edits, and when nothing is known — the separator before or after it is dropped too, so the default pattern gives `screenshot-2026-08-23_14-05-09.png`. |
 
 The default keeps the date first so the folder always sorts chronologically:
 `screenshot-2026-08-23_14-05-09-firefox.png`. Anything else in the pattern is
@@ -459,7 +458,8 @@ the preview available throughout annotation.
 In the editor, `Ctrl+P` or `P` renders a capture that stays pinned. It writes a
 `pin-<pid>-<n>-<random>.png` under the runtime snapshot directory, and launches
 the same `omasnap` executable in
-detached pin mode. Hyprland floats and pins each window on every workspace.
+detached pin mode. Sway floats each window and makes it sticky, so it shows on
+every workspace.
 Idle pins overlap in a compact deck at the focused monitor's bottom-right
 corner, newest in front. The front card stays straight; the cards behind it
 alternate the same growing lean as the recents shelf: −3°, +6°, −9°, +12°.
@@ -468,8 +468,8 @@ with transparent corners that take no input.
 Hover to straighten and fan them upward into fully exposed cards, wrapping into
 further columns when needed. The front card stays anchored; moving between cards
 keeps the fan open, and leaving folds it after a short delay. Placement accounts for
-monitor origins, scaling and rotation, respecting bars on any edge and leaving
-a 14-pixel gap inside the usable area. It reserves each new target while the
+monitor origins, scaling and rotation, respecting bars on any edge (from the visible
+workspace rectangle) and leaving a 14-pixel gap inside the usable area. It reserves each new target while the
 compositor animates it. If no on-screen slot fits, automatic packing leaves the window
 where the compositor placed it.
 
@@ -502,8 +502,8 @@ the pin in place and gives focus to the editor. One `Esc` dismisses the editor
 and updates that same pin, including any text being typed. Reopening it restores
 the editable layers and undo history. `P` / `Ctrl+P` in that editor returns to
 the existing pin too.
-While the overlay is open, a compositor close aimed at a pin (including stock
-`Super+W`) dismisses the overlay as `Esc` would, leaving the pins in place.
+While the overlay is open, a compositor close aimed at a pin (such as Sway's kill
+binding) dismisses the overlay as `Esc` would, leaving the pins in place.
 Automatic expiry compacts the stack without transferring keyboard focus.
 
 | Input on a pin | Action |
@@ -522,7 +522,7 @@ its PNG in the configured screenshots directory. Repeated copies reuse that file
 closing or expiring the preview leaves the saved copy available. A pin opened from
 an existing file copies that file's original path.
 
-Hyprland placement uses runtime dispatches and
+Sway placement uses `[con_id=N]` commands through `swaymsg` and
 requires no user window rules. The controls use the annotation toolbar’s vector
 icons, including Lucide’s pin drawn directly by the renderer.
 

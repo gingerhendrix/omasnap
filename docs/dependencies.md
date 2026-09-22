@@ -15,7 +15,7 @@ From `CMakeLists.txt`, this is the entire list:
 | **wayland-client** (pkg-config) | Raw protocol client code (`ext-image-copy-capture`, `zwlr_virtual_pointer_v1`) that LayerShellQt/QtWayland don't expose |
 | **wayland-scanner** + protocol XML | Generates the C bindings for the above at build time; not a runtime dependency |
 
-That's it. No JSON library (Qt's `QJsonDocument` handles `hyprctl -j`
+That's it. No JSON library (Qt's `QJsonDocument` handles `swaymsg -r`
 output), no image codec beyond what Qt's own PNG support provides, no HTTP,
 no logging framework, no CLI-parsing library beyond `QCommandLineParser`,
 no config-file parser beyond `QSettings` (used for the one optional INI
@@ -23,9 +23,9 @@ file — see below).
 
 ## Runtime: external processes, not libraries
 
-Omasnap shells out to a small number of existing Omarchy/Arch tools instead
+Omasnap shells out to a small number of existing Arch/Sway tools instead
 of linking their libraries in-process. This is intentional: a `QProcess`
-call to a well-maintained CLI tool that's already on every Omarchy install
+call to a well-maintained CLI tool that's already on every Sway install
 is a dependency Omasnap doesn't have to build, version, or debug — the
 alternative (vendoring an OCR engine, a clipboard protocol implementation,
 or a compositor IPC client) would be strictly more code and more risk for
@@ -33,13 +33,14 @@ no user-visible benefit.
 
 | Process | Used for | Required? |
 |---|---|---|
-| `hyprctl` | Monitor/window discovery (`-j` JSON), floating pin placement, natural-scroll policy query | Yes — see [platform-scope.md](platform-scope.md) |
+| `swaymsg` | Output/window discovery (`get_outputs`, `get_tree`), pin rules and placement, windowed-editor floating | Yes — see [platform-scope.md](platform-scope.md) |
 | `wl-copy` / `wl-paste` | Writing PNG/text to the Wayland clipboard, and verifying the write | Yes |
 | `tesseract` | OCR text recognition | Only if OCR is used; missing tesseract fails just that action |
-| `omarchy-notification-send` | Capture-finished notifications | No — falls back silently if absent (checked with `command -v` semantics via failed `QProcess::startDetached`) |
+| `notify-send` (libnotify) | Capture-finished notifications with an image hint | No — falls back silently if absent (checked with `command -v` semantics via failed `QProcess::startDetached`) |
 
-Each of these is invoked through the same small `runProcess`/
-`QProcess::startDetached` helpers in `src/capture.cpp`, from a background
+Each of these is invoked through the small `runProcess`/
+`QProcess::startDetached` helpers in `src/capture.cpp`, or the bounded
+`swaymsg` runner in `src/sway-ipc.cpp`, from a background
 worker (see [threading.md](threading.md)) — never inline on the UI thread,
 and always with a timeout.
 
@@ -78,12 +79,12 @@ Ask, in order:
    concurrency, text layout, SVG, image I/O). Check before reaching
    further.
 2. **Is this an OS-integration concern better solved by shelling out to an
-   existing Omarchy tool**, the way clipboard, OCR, and notifications are?
+   existing Arch/Sway tool**, the way clipboard, OCR, and notifications are?
    A new external-process dependency is far cheaper than a new linked
    library: it doesn't grow the binary, doesn't add a build-time
    dependency, and fails gracefully (a missing/failed process is just an
    error message).
-3. **Does it exist only to support a non-Hyprland compositor?** Then it's
+3. **Does it exist only to support a non-Sway compositor?** Then it's
    out of scope — see [platform-scope.md](platform-scope.md).
 4. **Is it justified anyway?** Then it needs to earn its place in the table
    above, and this file needs to be updated in the same PR. A dependency
@@ -99,7 +100,7 @@ adapted to the existing `QPainterPath` renderer. Its ISC notice is in
 SVG renderer, or theme lookup is needed.
 
 Single, statically-linked-where-practical binary, installed to
-`~/.local/bin/omasnap` (see the repository's `install-omarchy`). Every
+`~/.local/bin/omasnap` (see the repository's `install-arch`). Every
 dependency added here is weight every user carries on every install and
 every update. If a feature can be built with what's already linked, that's
 the implementation to ship.
