@@ -4,7 +4,6 @@
 #include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
 
 #include <QDebug>
-#include <QProcess>
 
 #include <wayland-client.h>
 
@@ -58,30 +57,11 @@ bool sleepUnlessStopped(int ms, const std::atomic<bool> &stop) {
 
 /// The compositor applies the user's natural-scroll policy to a real kernel
 /// mouse, so uinput injection must pre-compensate, and is only safe when the
-/// policy is actually known.
-std::optional<bool> hyprlandNaturalScroll() {
-  if (qEnvironmentVariable("HYPRLAND_INSTANCE_SIGNATURE").isEmpty())
-    return std::nullopt;
-  QProcess process;
-  process.start(QStringLiteral("hyprctl"),
-                {QStringLiteral("getoption"), QStringLiteral("input:natural_scroll"),
-                 QStringLiteral("-j")});
-  if (!process.waitForFinished(2000) || process.exitCode() != 0)
-    return std::nullopt;
-  const QByteArray out = process.readAllStandardOutput();
-  const int key = out.indexOf("\"bool\"");
-  if (key < 0)
-    return std::nullopt;
-  const int colon = out.indexOf(':', key);
-  if (colon < 0)
-    return std::nullopt;
-  const QByteArray tail = out.mid(colon + 1).trimmed();
-  if (tail.startsWith("true"))
-    return true;
-  if (tail.startsWith("false"))
-    return false;
-  return std::nullopt;
-}
+/// policy is actually known. Sway applies `input` blocks per device, and a
+/// fresh uinput mouse can match a different block than the user's own, so
+/// its policy is never known here. The wlr virtual pointer bypasses libinput
+/// and scrolls in the requested direction instead.
+std::optional<bool> compositorNaturalScroll() { return std::nullopt; }
 
 // --- uinput kernel mouse ------------------------------------------------------
 class UinputMouse {
@@ -351,7 +331,7 @@ bool spawnScrollInjector(std::shared_ptr<std::atomic<bool>> stop,
                          const QString &outputName, QString &error) {
   // Validate the backends synchronously so the caller gets a useful error;
   // the injection itself runs off the UI thread.
-  const std::optional<bool> naturalScroll = hyprlandNaturalScroll();
+  const std::optional<bool> naturalScroll = compositorNaturalScroll();
   auto uinput = std::make_shared<UinputMouse>();
   bool haveUinput = false;
   if (naturalScroll) {

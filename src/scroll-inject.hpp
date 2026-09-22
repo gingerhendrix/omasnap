@@ -1,9 +1,10 @@
 /** @fileoverview The auto-scroll injection worker: drives the application
  *  under the capture region with real wheel input, one tick per acknowledged
- *  capture cycle. Backend cascade (validated on Hyprland): a uinput kernel
- *  mouse when the compositor's natural-scroll policy is known (its wheel
- *  events are pre-compensated for it), else the wlr virtual-pointer protocol
- *  bound to the target output. */
+ *  capture cycle. Backend cascade: a uinput kernel mouse when the
+ *  compositor's natural-scroll policy is known (its wheel events are
+ *  pre-compensated for it), else the wlr virtual-pointer protocol bound to
+ *  the target output. On Sway the policy is never known, so the virtual
+ *  pointer always scrolls. */
 #pragma once
 
 #include "auto-capture.hpp"
