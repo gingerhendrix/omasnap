@@ -19,6 +19,7 @@
 #include "stitch.hpp"
 #include "stroke-smoothing-smoke.hpp"
 #include "pin-lifecycle-smoke.hpp"
+#include "sway-capture-smoke.hpp"
 #include "pin-interaction-smoke.hpp"
 #include "pin-file.hpp"
 #include "overlay-dismissal.hpp"
@@ -4237,18 +4238,20 @@ bool runAsyncCaptureRegionSmoke(QApplication &application, QString &error) {
         path, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
                   QFileDevice::ExeOwner);
   };
-  const QString fakeHyprctl = QDir(commands.path()).filePath(QStringLiteral("hyprctl"));
-  const QByteArray hyprctlScript =
+  const QString fakeSwaymsg = QDir(commands.path()).filePath(QStringLiteral("swaymsg"));
+  const QByteArray swaymsgScript =
       QByteArrayLiteral("#!/usr/bin/env bash\n"
-                        "if [[ \"$1 $2\" == \"monitors -j\" ]]; then\n"
+                        "if [[ \"${2:-}\" == \"get_outputs\" ]]; then\n"
                         "  printf '%s\\n' "
-                        "'[{\"focused\":true,\"scale\":1,\"width\":320,"
-                        "\"height\":240,\"transform\":0,\"name\":\"TEST\","
-                        "\"x\":0,\"y\":0,\"activeWorkspace\":{\"id\":7}}]'\n"
+                        "'[{\"focused\":true,\"scale\":1,"
+                        "\"rect\":{\"x\":0,\"y\":0,\"width\":320,\"height\":240},"
+                        "\"current_mode\":{\"width\":320,\"height\":240},"
+                        "\"transform\":\"normal\",\"name\":\"TEST\","
+                        "\"current_workspace\":\"7\"}]'\n"
                         "else\n"
-                        "  printf '[]\\n'\n"
+                        "  printf '{\"type\":\"root\",\"nodes\":[]}\\n'\n"
                         "fi\n");
-  if (!writeExecutable(fakeHyprctl, hyprctlScript)) {
+  if (!writeExecutable(fakeSwaymsg, swaymsgScript)) {
     error = QStringLiteral("Could not create async capture commands");
     return false;
   }
@@ -4264,8 +4267,10 @@ bool runAsyncCaptureRegionSmoke(QApplication &application, QString &error) {
 
   const QByteArray oldPath = qgetenv("PATH");
   const QByteArray oldCapture = qgetenv("OMASNAP_TEST_CAPTURE");
+  const QByteArray oldSwaySocket = qgetenv("SWAYSOCK");
   qputenv("PATH", commands.path().toUtf8() + ':' + oldPath);
   qputenv("OMASNAP_TEST_CAPTURE", sourcePath.toUtf8());
+  qputenv("SWAYSOCK", QByteArrayLiteral("/tmp/omasnap-test-sway.sock"));
 
   CaptureData capture;
   capture.monitor.name = QStringLiteral("TEST");
@@ -4301,6 +4306,10 @@ bool runAsyncCaptureRegionSmoke(QApplication &application, QString &error) {
       qunsetenv("OMASNAP_TEST_CAPTURE");
     else
       qputenv("OMASNAP_TEST_CAPTURE", oldCapture);
+    if (oldSwaySocket.isEmpty())
+      qunsetenv("SWAYSOCK");
+    else
+      qputenv("SWAYSOCK", oldSwaySocket);
     return false;
   }
 
@@ -4318,6 +4327,10 @@ bool runAsyncCaptureRegionSmoke(QApplication &application, QString &error) {
     qunsetenv("OMASNAP_TEST_CAPTURE");
   else
     qputenv("OMASNAP_TEST_CAPTURE", oldCapture);
+  if (oldSwaySocket.isEmpty())
+    qunsetenv("SWAYSOCK");
+  else
+    qputenv("SWAYSOCK", oldSwaySocket);
 
   if (selected.size() != QSize(160, 120)) {
     error = QStringLiteral("Async capture region selection produced %1x%2")
@@ -10734,7 +10747,7 @@ int main(int argc, char **argv) {
   capture.monitor.name = QStringLiteral("TEST");
   capture.monitor.geometry = {0, 0, 800, 600};
   capture.monitor.pixelSize = {800, 600};
-  capture.monitor.workspaceId = 42;
+  capture.monitor.workspace = QStringLiteral("42");
   capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
   {
     QPainter painter(&capture.source);
@@ -11670,11 +11683,11 @@ int main(int argc, char **argv) {
       1500, 1125, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
   const QImage highDpiRendered = renderCapture(
       highDpiCapture, QRectF(100, 100, 500, 300), {}, BackgroundStyle::None);
-  if (highDpiRendered.size() != QSize(1000, 600))
+  if (highDpiRendered.size() != QSize(938, 563))
     return 13;
   const QImage fullHighDpi = renderCapture(
       highDpiCapture, QRectF(0, 0, 800, 600), {}, BackgroundStyle::None);
-  if (fullHighDpi.size() != QSize(1600, 1200) ||
+  if (fullHighDpi.size() != QSize(1500, 1125) ||
       !fullHighDpi.save(outputRoot + QStringLiteral("-fullscreen-hidpi.png"),
                         "PNG"))
     return 15;
@@ -11768,6 +11781,12 @@ int main(int argc, char **argv) {
   if (!runTransformSmoke(transformError)) {
     qWarning().noquote() << transformError;
     return 67;
+  }
+
+  QString swayCaptureError;
+  if (!runSwayCaptureSmoke(swayCaptureError)) {
+    qWarning().noquote() << swayCaptureError;
+    return 216;
   }
 
   QString cutError;

@@ -1,0 +1,50 @@
+{
+  "type": "root",
+  "nodes": [
+    {
+      "type": "output", "name": "DP-3",
+      "nodes": [
+        {
+          "type": "workspace", "name": "dev:main", "visible": true,
+          "nodes": [
+            {
+              "type": "con", "name": "split", "visible": true,
+              "nodes": [
+                {
+                  "type": "con", "name": "Editor", "visible": true,
+                  "app_id": "dev.editor", "pid": 1001,
+                  "foreign_toplevel_identifier": "wayland-alpha",
+                  "rect": {"x": 2000, "y": 100, "width": 600, "height": 400},
+                  "deco_rect": {"x": 80, "y": 0, "width": 600, "height": 22}
+                },
+                {
+                  "type": "con", "name": "hidden", "visible": false,
+                  "app_id": "hidden.app", "pid": 1002,
+                  "rect": {"x": 2600, "y": 100, "width": 600, "height": 400}
+                }
+              ]
+            },
+            {
+              "type": "con", "name": "", "visible": true, "pid": 1003,
+              "window_properties": {"class": "LegacyApp"},
+              "rect": {"x": 1900, "y": 700, "width": 500, "height": 300}
+            }
+          ],
+          "floating_nodes": [
+            {
+              "type": "floating_con", "name": "Notes", "visible": true,
+              "app_id": "notes", "pid": 1004,
+              "rect": {"x": 2820, "y": 300, "width": 700, "height": 500}
+            }
+          ]
+        },
+        {
+          "type": "workspace", "name": "other", "visible": false,
+          "nodes": [{"type": "con", "name": "Hidden", "visible": true,
+                     "app_id": "hidden", "pid": 1005,
+                     "rect": {"x": 1920, "y": 0, "width": 500, "height": 500}}]
+        }
+      ]
+    }
+  ]
+}

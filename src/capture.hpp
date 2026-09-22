@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 
+#include <QByteArray>
 #include <QPainterPath>
 #include <QColor>
 #include <QImage>
@@ -27,14 +28,17 @@ struct MonitorInfo {
   QRect geometry;
   QSize pixelSize;
   qreal scale = 1.0;
-  int workspaceId = 0;
+  /** Sway workspace name; named workspaces are not numeric. */
+  QString workspace;
+  /** Sway output transform string, such as `normal` or `flipped-90`. */
+  QString transform;
 };
 
 struct WindowTarget {
   QRect rect;
   QString stableId;
   QString title;
-  /** Hyprland window class (e.g. `firefox`, `org.gnome.Nautilus`). */
+  /** Sway `app_id`, or the X11 class of an Xwayland view (e.g. `firefox`). */
   QString appClass;
 };
 
@@ -164,10 +168,18 @@ enum class AnnotationLayer { Redaction, Default };
                                        TextFont textFont = TextFont::Neucha);
 /**
  * Discovers the focused monitor (name, geometry, scale). Fast: only one
- * `hyprctl monitors` call. Safe to call on the main thread to position the
+ * Sway IPC call. Safe to call on the main thread to position the
  * overlay after the pixel capture has already produced a frozen frame.
  */
 [[nodiscard]] bool probeFocusedMonitor(MonitorInfo &monitor, QString &error);
+/** Reads the focused output from `swaymsg -t get_outputs -r` JSON. */
+[[nodiscard]] bool parseSwayOutputs(const QByteArray &json,
+                                    MonitorInfo &monitor, QString &error);
+/** Collects visible tiled and floating views on the monitor's workspace from
+ *  `swaymsg -t get_tree -r` JSON, clipped to monitor-local coordinates. */
+[[nodiscard]] QVector<WindowTarget> parseSwayTree(const QByteArray &json,
+                                                  const MonitorInfo &monitor,
+                                                  QString &error);
 /**
  * Captures the focused monitor's pixels onto the given monitor, and its window
  * list when `includeWindows` is set. Window discovery runs alongside the screen
@@ -253,6 +265,9 @@ private:
  *  on a scaled monitor then opens at that scale rather than at 1:1. */
 void describeFileCapture(CaptureData &capture, QImage image,
                          const OperationLog &log);
+/** Maps logical selection bounds to the measured native capture pixels. */
+[[nodiscard]] QRect sourcePixelRect(const CaptureData &capture,
+                                    const QRectF &selection);
 /** Returns an upright image for captured Wayland buffer contents. */
 [[nodiscard]] QImage normalizeWaylandCapture(const QImage &image,
                                              std::uint32_t transform);

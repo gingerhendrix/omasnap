@@ -49,8 +49,7 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
     }
   }
   parser.setApplicationDescription(QStringLiteral(
-      "Native Wayland screenshot and annotation overlay for Hyprland and "
-      "Omarchy.\n"
+      "Native Wayland screenshot and annotation overlay for Sway.\n"
       "\n"
       "With no target, drag for a region, click a window, or click open "
       "space for\nthe full focused monitor. Captures copy immediately and show a preview for\n"

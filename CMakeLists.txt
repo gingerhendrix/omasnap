@@ -180,11 +180,16 @@ qt_add_executable(omasnap-smoke
   src/auto-capture.hpp
   tests/stitch-smoke.cpp
   tests/stitch-smoke.hpp
+  tests/sway-capture-smoke.cpp
+  tests/sway-capture-smoke.hpp
 )
 target_include_directories(omasnap-smoke PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
 )
 target_compile_options(omasnap-smoke PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(omasnap-smoke PRIVATE
+  OMASNAP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+)
 target_link_libraries(omasnap-smoke PRIVATE omasnap-core Qt6::Test)
 target_precompile_headers(omasnap-smoke REUSE_FROM omasnap-core)
 add_test(NAME omasnap-smoke COMMAND omasnap-smoke "${CMAKE_CURRENT_BINARY_DIR}/omasnap-smoke-output")

@@ -128,7 +128,7 @@ int main(int argc, char **argv) {
   startupTimingMark("entered main");
   QCoreApplication::setApplicationName(QStringLiteral("omasnap"));
   QCoreApplication::setApplicationVersion(QString::fromLatin1(OMASNAP_VERSION));
-  QCoreApplication::setOrganizationName(QStringLiteral("Omarchy"));
+  QCoreApplication::setOrganizationName(QStringLiteral("Omasnap"));
   // Choose the Wayland shell before Qt connects. Pins and file editors
   // use compositor windows; fresh captures select on a fullscreen overlay.
   QStringList rawArguments;
@@ -420,7 +420,7 @@ int main(int argc, char **argv) {
                              "Captured %1 workspace %2 with %3 selectable "
                              "windows")
                              .arg(capture.monitor.name)
-                             .arg(capture.monitor.workspaceId)
+                             .arg(capture.monitor.workspace)
                              .arg(capture.windows.size());
   }
 
