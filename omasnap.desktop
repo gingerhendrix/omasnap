@@ -1,9 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=Omasnap
-Comment=Capture and annotate a screenshot
+Comment=Capture and annotate screenshots on Sway
 Exec=omasnap
 Icon=camera-photo
 Terminal=false
 Categories=Graphics;
+Keywords=screenshot;screen capture;annotation;Sway;Wayland;
 StartupNotify=false
