@@ -64,28 +64,44 @@ bool runPinLayoutSmoke(QString &error) {
     return false;
   }
 
-  // A bar may reserve any edge (or several). Insets are already logical
-  // pixels even on a scaled monitor; both free drops and stacks respect them.
+  // A bar may reserve any edge (or several). Sway reports the visible
+  // workspace rect in logical pixels with every bar already removed; both
+  // free drops and stacks respect it.
   struct BarCase {
-    QJsonArray reserved;
     QRect area;
     QPoint drop;
     QPoint restored;
     QPoint packed;
   };
   const QList<BarCase> bars{
-      {{36, 0, 0, 0}, {36, 0, 3036, 1728}, {-50, 500}, {50, 500}, {2858, 1601}},
-      {{0, 26, 0, 0}, {0, 26, 3072, 1702}, {500, 10}, {500, 40}, {2858, 1601}},
-      {{0, 0, 30, 0}, {0, 0, 3042, 1728}, {2900, 500}, {2828, 500}, {2828, 1601}},
-      {{0, 0, 0, 40}, {0, 0, 3072, 1688}, {500, 1640}, {500, 1561}, {2858, 1561}},
-      {{36, 26, 30, 40}, {36, 26, 3006, 1662}, {-50, 1640}, {50, 1561}, {2828, 1561}},
-      {{0, 0, 0, 0}, {0, 0, 3072, 1728}, {500, -50}, {500, 14}, {2858, 1601}}};
-  QJsonObject monitor{{QStringLiteral("width"), 6144},
-                      {QStringLiteral("height"), 3456},
-                      {QStringLiteral("scale"), 2}};
+      {{36, 0, 3036, 1728}, {-50, 500}, {50, 500}, {2858, 1601}},
+      {{0, 26, 3072, 1702}, {500, 10}, {500, 40}, {2858, 1601}},
+      {{0, 0, 3042, 1728}, {2900, 500}, {2828, 500}, {2828, 1601}},
+      {{0, 0, 3072, 1688}, {500, 1640}, {500, 1561}, {2858, 1561}},
+      {{36, 26, 3006, 1662}, {-50, 1640}, {50, 1561}, {2828, 1561}},
+      {{0, 0, 3072, 1728}, {500, -50}, {500, 14}, {2858, 1601}}};
+  const auto jsonRect = [](const QRect &rect) {
+    return QJsonObject{{QStringLiteral("x"), rect.x()},
+                       {QStringLiteral("y"), rect.y()},
+                       {QStringLiteral("width"), rect.width()},
+                       {QStringLiteral("height"), rect.height()}};
+  };
+  // A scale-2 6144x3456 mode: Sway's output rect is already logical.
+  const QJsonObject monitor{{QStringLiteral("name"), QStringLiteral("DP-1")},
+                            {QStringLiteral("rect"), jsonRect({0, 0, 3072, 1728})}};
   for (const auto &bar : bars) {
-    monitor.insert(QStringLiteral("reserved"), bar.reserved);
-    const QRect area = pinMonitorWorkArea(monitor);
+    // Hidden workspaces and other outputs must not shape this work area.
+    const QJsonArray workspaces{
+        QJsonObject{{QStringLiteral("output"), QStringLiteral("DP-1")},
+                    {QStringLiteral("visible"), false},
+                    {QStringLiteral("rect"), jsonRect({0, 300, 100, 100})}},
+        QJsonObject{{QStringLiteral("output"), QStringLiteral("HDMI-A-1")},
+                    {QStringLiteral("visible"), true},
+                    {QStringLiteral("rect"), jsonRect({0, 400, 100, 100})}},
+        QJsonObject{{QStringLiteral("output"), QStringLiteral("DP-1")},
+                    {QStringLiteral("visible"), true},
+                    {QStringLiteral("rect"), jsonRect(bar.area)}}};
+    const QRect area = pinMonitorWorkArea(monitor, workspaces);
     const auto packed = pinPackedPosition({}, area.size(), preview, 10, 14);
     if (area != bar.area ||
         pinVisibleRect(QRect(bar.drop, preview), area, 14) != QRect(bar.restored, preview) ||
@@ -426,21 +442,31 @@ bool runPinLayoutSmoke(QString &error) {
     return false;
   }
 
-  // The dispatch expressions are Lua for a Lua-configured Hyprland;
-  // a placement that silently does nothing is exactly the failure these guard.
-  const QString title = QStringLiteral("0x1234");
+  // Sway commands address one container id. A placement that silently
+  // does nothing is exactly the failure these guard.
+  const QString title = QStringLiteral("42");
   if (pinFloatDispatch(title) !=
-          QStringLiteral(
-              "hl.dsp.window.float({ window = \"address:0x1234\" })") ||
-      pinPinDispatch(title) !=
-          QStringLiteral(
-              "hl.dsp.window.pin({ window = \"address:0x1234\" })") ||
-      pinMoveDispatch(title, 120, 40) !=
-          QStringLiteral("hl.dsp.window.move({ x = 120, y = 40, relative = "
-                         "false, window = \"address:0x1234\" })") ||
-      pinFocusDispatch(title) !=
-          QStringLiteral("hl.dsp.focus({ window = \"address:0x1234\" })")) {
-    error = QStringLiteral("Hyprland dispatch expressions were malformed");
+          QStringLiteral("[con_id=42] floating enable, border none") ||
+      pinPinDispatch(title) != QStringLiteral("[con_id=42] sticky enable") ||
+      pinMoveDispatch(title, 120, -40) !=
+          QStringLiteral("[con_id=42] move absolute position 120 -40") ||
+      pinRaiseDispatch(title) != QStringLiteral("[con_id=42] focus") ||
+      pinFocusDispatch(title) != QStringLiteral("[con_id=42] focus")) {
+    error = QStringLiteral("Sway pin commands were malformed");
+    return false;
+  }
+  // Over IPC Sway splits an unquoted for_window body at its commas, which
+  // would run sticky and border immediately instead of on each new pin.
+  const QStringList rules = pinRuleCommands();
+  const QString criteria = QStringLiteral(
+      "[app_id=\"^omasnap$\" title=\"^omasnap-pin [0-9]+$\"]");
+  if (rules.size() != 2 ||
+      rules.at(0) != QStringLiteral("no_focus ") + criteria ||
+      rules.at(1) != QStringLiteral("for_window ") + criteria +
+                         QStringLiteral(" \"floating enable, sticky enable, "
+                                        "border none\"")) {
+    error = QStringLiteral("Sway pin rules were malformed: %1")
+                .arg(rules.join(QStringLiteral(" | ")));
     return false;
   }
   QVector<QRect> occupied;
@@ -464,20 +490,37 @@ bool runPinLayoutSmoke(QString &error) {
     error = QStringLiteral("A full or undersized output returned an unsafe slot");
     return false;
   }
-  QJsonObject rotated{{QStringLiteral("x"), -1080},
-                             {QStringLiteral("y"), 200},
-                             {QStringLiteral("width"), 3840},
-                             {QStringLiteral("height"), 2160},
-                             {QStringLiteral("scale"), 2},
-                             {QStringLiteral("transform"), 1}};
+  // A 3840x2160 mode at scale 2, rotated 90 degrees, left of the primary.
+  // Sway's rect already carries origin, scale, and transform.
+  const QJsonObject rotated{
+      {QStringLiteral("name"), QStringLiteral("DP-2")},
+      {QStringLiteral("rect"), jsonRect({-1080, 200, 1080, 1920})},
+      {QStringLiteral("current_mode"),
+       QJsonObject{{QStringLiteral("width"), 3840},
+                   {QStringLiteral("height"), 2160}}},
+      {QStringLiteral("scale"), 2},
+      {QStringLiteral("transform"), QStringLiteral("90")}};
   if (pinMonitorGeometry(rotated) != QRect(-1080, 200, 1080, 1920) ||
-      pinMonitorWorkArea(rotated) != pinMonitorGeometry(rotated)) {
+      pinMonitorWorkArea(rotated, {}) != pinMonitorGeometry(rotated)) {
     error = QStringLiteral("Pin monitor geometry lost origin, scale or transform");
     return false;
   }
-  rotated.insert(QStringLiteral("reserved"), QJsonArray{40, 30, 20, 10});
-  if (pinMonitorWorkArea(rotated) != QRect(-1040, 230, 1020, 1880)) {
+  const QJsonArray rotatedWorkspaces{
+      QJsonObject{{QStringLiteral("output"), QStringLiteral("DP-2")},
+                  {QStringLiteral("visible"), true},
+                  {QStringLiteral("rect"), jsonRect({-1040, 230, 1020, 1880})}}};
+  if (pinMonitorWorkArea(rotated, rotatedWorkspaces) !=
+      QRect(-1040, 230, 1020, 1880)) {
     error = QStringLiteral("Reserved edges were scaled or rotated a second time");
+    return false;
+  }
+  // A workspace rect that spills past its output never widens the area.
+  const QJsonArray spilling{
+      QJsonObject{{QStringLiteral("output"), QStringLiteral("DP-2")},
+                  {QStringLiteral("visible"), true},
+                  {QStringLiteral("rect"), jsonRect({-1200, 230, 400, 1880})}}};
+  if (pinMonitorWorkArea(rotated, spilling) != QRect(-1080, 230, 280, 1880)) {
+    error = QStringLiteral("A workspace rect escaped its output");
     return false;
   }
   return true;

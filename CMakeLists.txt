@@ -79,6 +79,8 @@ add_library(omasnap-core STATIC
   src/startup-timing.hpp
   src/stroke-smoothing.cpp
   src/stroke-smoothing.hpp
+  src/sway-ipc.cpp
+  src/sway-ipc.hpp
   ${PROTOCOL_SOURCES}
   src/editor.cpp
   src/editor.hpp

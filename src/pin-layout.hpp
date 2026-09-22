@@ -2,12 +2,14 @@
 #pragma once
 
 #include <QPair>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <optional>
 #include <QPoint>
 #include <QRect>
 #include <QSize>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QTransform>
 
@@ -70,18 +72,23 @@ pinInsertionPlan(QVector<QPair<QString, QRect>> column,
 [[nodiscard]] bool pinInColumn(const QRect &rect, const QSize &screenSize,
                                int margin, int gap);
 
-/// Dispatch expressions for a Lua-configured Hyprland, which evaluates the
-/// dispatch argument as Lua; the classic dispatcher grammar parses as an
-/// expression there and fails while reporting success.
+/// Sway command lists addressed to one container. `address` is the
+/// container id from get_tree. Sway raises a floating container only by
+/// focusing it, so raise and focus are the same command.
 [[nodiscard]] QString pinFloatDispatch(const QString &address);
 [[nodiscard]] QString pinPinDispatch(const QString &address);
 [[nodiscard]] QString pinMoveDispatch(const QString &address, int x, int y);
 [[nodiscard]] QString pinRaiseDispatch(const QString &address);
 [[nodiscard]] QString pinFocusDispatch(const QString &address);
-/// Global logical geometry, including scale and quarter-turn transforms.
-[[nodiscard]] QRect pinMonitorGeometry(const QJsonObject &monitor);
-/// Global logical geometry excluding reserved space for bars on any edge.
-[[nodiscard]] QRect pinMonitorWorkArea(const QJsonObject &monitor);
+/// Rules registered before a pin maps: never take focus on creation, and
+/// float, stick, and drop the border as soon as the view appears.
+[[nodiscard]] QStringList pinRuleCommands();
+/// Global logical geometry of a `get_outputs` entry.
+[[nodiscard]] QRect pinMonitorGeometry(const QJsonObject &output);
+/// Global logical geometry less reserved bar space: the visible workspace
+/// rect on that output from `get_workspaces`.
+[[nodiscard]] QRect pinMonitorWorkArea(const QJsonObject &output,
+                                       const QJsonArray &workspaces);
 
 /// Control geometry shared by painting and hit testing: labeled actions in
 /// the center, drag/path at top-left, and pin/close at top-right.

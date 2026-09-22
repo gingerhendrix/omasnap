@@ -243,60 +243,79 @@ bool pinInColumn(const QRect &rect, const QSize &screenSize, int margin, int gap
 }
 
 namespace {
-// Address selectors identify the exact client already filtered by app class.
-QString windowSelector(const QString &address) {
-  return QStringLiteral("window = \"address:%1\"").arg(address);
+// Container ids name the exact view already filtered by app id and title.
+// They are integers from get_tree, so no user text reaches the command.
+QString containerCommand(const QString &address, const QString &command) {
+  return QStringLiteral("[con_id=%1] %2").arg(address, command);
 }
+
+// Matches pins only. Editor titles are "omasnap" or "omasnap <file>".
+const QString kPinCriteria =
+    QStringLiteral("[app_id=\"^omasnap$\" title=\"^omasnap-pin [0-9]+$\"]");
 } // namespace
 
 QString pinFloatDispatch(const QString &address) {
-  return QStringLiteral("hl.dsp.window.float({ %1 })")
-      .arg(windowSelector(address));
+  return containerCommand(address,
+                          QStringLiteral("floating enable, border none"));
 }
 
 QString pinPinDispatch(const QString &address) {
-  return QStringLiteral("hl.dsp.window.pin({ %1 })").arg(windowSelector(address));
+  return containerCommand(address, QStringLiteral("sticky enable"));
 }
 
 QString pinMoveDispatch(const QString &address, int x, int y) {
-  return QStringLiteral(
-             "hl.dsp.window.move({ x = %1, y = %2, relative = false, %3 })")
-      .arg(x)
-      .arg(y)
-      .arg(windowSelector(address));
+  return containerCommand(
+      address,
+      QStringLiteral("move absolute position %1 %2").arg(x).arg(y));
 }
 
 QString pinRaiseDispatch(const QString &address) {
-  return QStringLiteral("hl.dsp.window.alter_zorder({ mode = \"top\", %1 })")
-      .arg(windowSelector(address));
+  // Sway raises a floating container only by focusing it. Callers restore
+  // the previous focus in the same command list.
+  return containerCommand(address, QStringLiteral("focus"));
 }
 
 QString pinFocusDispatch(const QString &address) {
-  return QStringLiteral("hl.dsp.focus({ %1 })").arg(windowSelector(address));
+  return containerCommand(address, QStringLiteral("focus"));
 }
 
-QRect pinMonitorGeometry(const QJsonObject &monitor) {
-  const qreal scale = std::max<qreal>(0.0001, monitor.value(QStringLiteral("scale")).toDouble(1));
-  QSize pixels(monitor.value(QStringLiteral("width")).toInt(),
-               monitor.value(QStringLiteral("height")).toInt());
-  if (monitor.value(QStringLiteral("transform")).toInt() % 2 != 0)
-    pixels.transpose();
-  return {monitor.value(QStringLiteral("x")).toInt(),
-          monitor.value(QStringLiteral("y")).toInt(),
-          qRound(pixels.width() / scale), qRound(pixels.height() / scale)};
+QStringList pinRuleCommands() {
+  // Over IPC Sway splits for_window's body at commas unless it is quoted.
+  return {QStringLiteral("no_focus %1").arg(kPinCriteria),
+          QStringLiteral("for_window %1 \"floating enable, sticky enable, "
+                         "border none\"")
+              .arg(kPinCriteria)};
 }
 
-QRect pinMonitorWorkArea(const QJsonObject &monitor) {
-  const QRect geometry = pinMonitorGeometry(monitor);
-  const QJsonArray reserved = monitor.value(QStringLiteral("reserved")).toArray();
-  if (reserved.size() != 4)
-    return geometry;
-  // Hyprland reports left, top, right, bottom in logical coordinates,
-  // already accounting for the output's scale and transform.
-  return geometry.adjusted(std::max(0, reserved.at(0).toInt()),
-                           std::max(0, reserved.at(1).toInt()),
-                           -std::max(0, reserved.at(2).toInt()),
-                           -std::max(0, reserved.at(3).toInt()));
+QRect pinMonitorGeometry(const QJsonObject &output) {
+  // Sway's output rect is already logical, scaled, and transformed.
+  const QJsonObject rect = output.value(QStringLiteral("rect")).toObject();
+  return {rect.value(QStringLiteral("x")).toInt(),
+          rect.value(QStringLiteral("y")).toInt(),
+          rect.value(QStringLiteral("width")).toInt(),
+          rect.value(QStringLiteral("height")).toInt()};
+}
+
+QRect pinMonitorWorkArea(const QJsonObject &output,
+                         const QJsonArray &workspaces) {
+  const QRect geometry = pinMonitorGeometry(output);
+  const QString name = output.value(QStringLiteral("name")).toString();
+  // The visible workspace's rect is the output less every bar's exclusive
+  // zone, on any edge.
+  for (const QJsonValue &value : workspaces) {
+    const QJsonObject workspace = value.toObject();
+    if (!workspace.value(QStringLiteral("visible")).toBool() ||
+        workspace.value(QStringLiteral("output")).toString() != name)
+      continue;
+    const QJsonObject rect = workspace.value(QStringLiteral("rect")).toObject();
+    const QRect area = QRect(rect.value(QStringLiteral("x")).toInt(),
+                             rect.value(QStringLiteral("y")).toInt(),
+                             rect.value(QStringLiteral("width")).toInt(),
+                             rect.value(QStringLiteral("height")).toInt())
+                           .intersected(geometry);
+    return area.isEmpty() ? geometry : area;
+  }
+  return geometry;
 }
 
 QRectF pinControlRect(const QSize &frame, int index) {

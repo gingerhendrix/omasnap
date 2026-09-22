@@ -13,9 +13,11 @@
 #include "icons.hpp"
 #include "overlay-chrome.hpp"
 #include "overlay-dismissal.hpp"
+#include "sway-ipc.hpp"
 
 #include <QApplication>
 #include <QBuffer>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QDrag>
 #include <QFile>
@@ -90,29 +92,31 @@ QThreadPool &pinPool() {
   return pool;
 }
 
-QString runForOutput(const QString &program, const QStringList &arguments,
-                     bool *ok = nullptr) {
-  if (ok)
-    *ok = false;
-  QProcess process;
-  process.start(program, arguments);
-  if (!process.waitForFinished(500)) {
-    process.kill();
-    process.waitForFinished(500);
-    return {};
-  }
-  if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
-    return {};
-  if (ok)
-    *ok = true;
-  return QString::fromUtf8(process.readAllStandardOutput());
-}
+bool swayDispatch(const QString &command) { return swayCommand(command); }
 
-bool hyprDispatch(const QString &expression) {
-  bool ok = false;
-  const QString output = runForOutput(QStringLiteral("hyprctl"),
-                                      {QStringLiteral("dispatch"), expression}, &ok);
-  return ok && output.trimmed() == QStringLiteral("ok");
+// Sway rules are not named, so they cannot be replaced, and each call adds
+// another copy. Register them once per Sway instance. SWAYSOCK names the
+// compositor process, so a new session registers again. A `swaymsg reload`
+// drops runtime rules; the placement pass still floats and sticks each pin.
+bool registerSwayPinRules() {
+  const QByteArray socket = qgetenv("SWAYSOCK");
+  const QString runtime = secureRuntimeDirectory();
+  if (socket.isEmpty() || runtime.isEmpty())
+    return false;
+  const QString stamp = QDir(runtime).filePath(
+      QStringLiteral("sway-pin-rules-%1")
+          .arg(QString::fromLatin1(
+              QCryptographicHash::hash(socket, QCryptographicHash::Sha1)
+                  .toHex()
+                  .left(16))));
+  if (QFileInfo::exists(stamp))
+    return true;
+  for (const QString &command : pinRuleCommands()) {
+    if (!swayCommand(command))
+      return false;
+  }
+  QSaveFile file(stamp);
+  return file.open(QIODevice::WriteOnly) && file.commit();
 }
 
 struct CompositorMonitor {
@@ -120,18 +124,30 @@ struct CompositorMonitor {
   QRect workArea;
 };
 
-QJsonArray compositorMonitors() {
-  return QJsonDocument::fromJson(
-      runForOutput(QStringLiteral("hyprctl"),
-                   {QStringLiteral("-j"), QStringLiteral("monitors")}).toUtf8()).array();
+struct CompositorLayout {
+  QJsonArray outputs;
+  QJsonArray workspaces;
+};
+
+CompositorLayout compositorMonitors() {
+  return {QJsonDocument::fromJson(swaymsgOutput({QStringLiteral("-t"),
+                                                 QStringLiteral("get_outputs")}))
+              .array(),
+          QJsonDocument::fromJson(swaymsgOutput({QStringLiteral("-t"),
+                                                 QStringLiteral("get_workspaces")}))
+              .array()};
 }
 
-CompositorMonitor compositorMonitor(const QJsonArray &monitors,
+CompositorMonitor compositorMonitor(const CompositorLayout &layout,
                                     const QPoint &point = {}, bool usePoint = false) {
   CompositorMonitor focused;
-  for (const QJsonValue &value : monitors) {
+  for (const QJsonValue &value : layout.outputs) {
     const QJsonObject monitor = value.toObject();
-    const CompositorMonitor screen{pinMonitorGeometry(monitor), pinMonitorWorkArea(monitor)};
+    // Sway lists disabled outputs too; they have no usable geometry.
+    if (!monitor.value(QStringLiteral("active")).toBool(true))
+      continue;
+    const CompositorMonitor screen{pinMonitorGeometry(monitor),
+                                   pinMonitorWorkArea(monitor, layout.workspaces)};
     // The bar belongs to the monitor too; only placement uses the work area.
     if (usePoint && screen.geometry.contains(point))
       return screen;
@@ -150,25 +166,18 @@ struct CompositorPin {
   bool free = false;
 };
 
-QVector<CompositorPin> compositorPinRects() {
+// `focused` receives the container id holding keyboard focus, if any.
+QVector<CompositorPin> compositorPinRects(QString *focused = nullptr) {
   QVector<CompositorPin> pins;
-  const QJsonArray clients = QJsonDocument::fromJson(
-      runForOutput(QStringLiteral("hyprctl"),
-                   {QStringLiteral("-j"), QStringLiteral("clients")}).toUtf8()).array();
-  for (const QJsonValue &value : clients) {
-    const QJsonObject client = value.toObject();
-    const QString title = client.value(QStringLiteral("title")).toString();
-    if (client.value(QStringLiteral("class")).toString() != QStringLiteral("omasnap") ||
-        !title.startsWith(kPinTitlePrefix + QLatin1Char(' ')) ||
-        client.value(QStringLiteral("address")).toString().isEmpty())
+  for (const SwayWindow &window : swayWindows()) {
+    if (focused && window.focused)
+      *focused = QString::number(window.id);
+    if (window.appId != QStringLiteral("omasnap") ||
+        !window.title.startsWith(kPinTitlePrefix + QLatin1Char(' ')) ||
+        window.id <= 0)
       continue;
-    const QJsonArray at = client.value(QStringLiteral("at")).toArray();
-    const QJsonArray size = client.value(QStringLiteral("size")).toArray();
-    if (at.size() == 2 && size.size() == 2)
-      pins.push_back({title, client.value(QStringLiteral("address")).toString(), QRect(at.at(0).toInt(), at.at(1).toInt(),
-                                   size.at(0).toInt(), size.at(1).toInt()),
-                      client.value(QStringLiteral("floating")).toBool(),
-                      client.value(QStringLiteral("pinned")).toBool()});
+    pins.push_back({window.title, QString::number(window.id), window.rect,
+                    window.floating, window.sticky});
   }
   return pins;
 }
@@ -188,7 +197,7 @@ public:
     if (file.open(QIODevice::ReadOnly))
       state_ = QJsonDocument::fromJson(file.readAll()).object();
     targets_ = state_.value(QStringLiteral("targets")).toObject();
-    pins = compositorPinRects();
+    pins = compositorPinRects(&focused_);
     const QJsonObject free = state_.value(QStringLiteral("free")).toObject();
     QJsonObject liveFree;
     for (CompositorPin &pin : pins) {
@@ -291,7 +300,7 @@ public:
                                       {QStringLiteral("time"), QDateTime::currentMSecsSinceEpoch()}});
     if (!save())
       return false;
-    if (hyprDispatch(pinMoveDispatch(pin->address, rect.x(), rect.y()))) {
+    if (swayDispatch(pinMoveDispatch(pin->address, rect.x(), rect.y()))) {
       pin->rect = rect;
       return true;
     }
@@ -365,15 +374,26 @@ public:
       }
     }
     // Hover focus can raise any exposed card. Restore the deck from back
-    // to front without transferring keyboard focus when it folds.
+    // to front when it folds. Sway raises only by focusing, so the same
+    // command list hands focus back to the window that held it, unless that
+    // was a pin: refocusing a pin would lift it out of the deck order.
     if (!expanded && changed) {
+      QStringList commands;
       for (auto card = layout.crbegin(); card != layout.crend(); ++card) {
         const auto pin = std::find_if(pins.cbegin(), pins.cend(), [&](const CompositorPin &p) {
           return p.title == card->first;
         });
-        if (pin != pins.cend() && !hyprDispatch(pinRaiseDispatch(pin->address)))
-          return false;
+        if (pin != pins.cend())
+          commands.push_back(pinRaiseDispatch(pin->address));
       }
+      const bool pinFocused = std::any_of(pins.cbegin(), pins.cend(), [&](const CompositorPin &p) {
+        return p.address == focused_;
+      });
+      if (!commands.isEmpty() && !focused_.isEmpty() && !pinFocused)
+        commands.push_back(pinFocusDispatch(focused_));
+      if (!commands.isEmpty() &&
+          !swayDispatch(commands.join(QStringLiteral("; "))))
+        return false;
     }
     return true;
   }
@@ -389,7 +409,7 @@ public:
         next = &pin;
     }
     if (next)
-      hyprDispatch(pinFocusDispatch(next->address));
+      swayDispatch(pinFocusDispatch(next->address));
   }
   QVector<CompositorPin> pins;
 private:
@@ -400,6 +420,7 @@ private:
     return file.open(QIODevice::WriteOnly) && file.write(data) == data.size() && file.commit();
   }
   QString root_;
+  QString focused_;
   QLockFile lock_;
   QJsonObject state_;
   QJsonObject targets_;
@@ -434,8 +455,11 @@ struct StackSnapshot {
 
 // Exactly one hovered pin owns the short-lived fan watch. Ownership moves
 // with the pointer; crossing the gaps keeps the fan open. No idle polling.
+// Sway has no cursor-position query. The owner's own hover stands in for
+// the pointer: it is inside the hot zone while it is over the owning card,
+// and ownership moves when the pointer enters another card in the fan.
 StackSnapshot watchPinStack(const QString &title, const QRect &screen,
-                            bool opening, bool mayClose) {
+                            bool opening, bool mayClose, bool pointerInside) {
   PinPlacement placement;
   if (!placement.ready())
     return {screen, {}, true};
@@ -460,17 +484,7 @@ StackSnapshot watchPinStack(const QString &title, const QRect &screen,
     return {};
   }
 
-  const QJsonObject cursor = QJsonDocument::fromJson(
-      runForOutput(QStringLiteral("hyprctl"),
-                   {QStringLiteral("-j"), QStringLiteral("cursorpos")}).toUtf8()).object();
-  if (!cursor.contains(QStringLiteral("x")) || !cursor.contains(QStringLiteral("y")))
-    return {screen, placement.pins, true};
-  QVector<QRect> cards;
-  for (const auto &card : placement.column(screen))
-    cards.push_back(card.second.translated(screen.topLeft()));
-  const QPoint pointer(cursor.value(QStringLiteral("x")).toInt(),
-                        cursor.value(QStringLiteral("y")).toInt());
-  const bool outside = !pinStackHotZone(cards, screen).contains(pointer);
+  const bool outside = !pointerInside;
   if (outside && mayClose) {
     if (placement.arrange(screen, false)) {
       placement.setHover({});
@@ -502,7 +516,7 @@ public:
     setAttribute(Qt::WA_ShowWithoutActivating);
     setAttribute(Qt::WA_TranslucentBackground);
     // Fixed, not merely sized: min equal to max is the hint a compositor
-    // honors when floating, and Hyprland floats an unresizable window on
+    // honors when floating, and Sway floats an unresizable window on
     // its own instead of first stretching it into a tile.
     setFixedSize(frame);
     setAttribute(Qt::WA_AlwaysShowToolTips, true);
@@ -636,8 +650,9 @@ public:
                           stackOutside_.elapsed() >= kStackCloseMs;
     stackGeneration_ = snapGeneration_;
     stackWatcher_.setFuture(QtConcurrent::run(&pinPool(),
-        [title = windowTitle(), screen = dragScreen_, opening, mayClose] {
-      return watchPinStack(title, screen, opening, mayClose);
+        [title = windowTitle(), screen = dragScreen_, opening, mayClose,
+         pointerInside = hovered_] {
+      return watchPinStack(title, screen, opening, mayClose, pointerInside);
     }));
   }
 
@@ -1015,8 +1030,9 @@ protected:
   }
 
   void watchCompositorDrag(Qt::KeyboardModifiers modifiers) {
-    // Super+mouse is consumed by Hyprland, so arm the same geometry watch
-    // when Super reaches a hovered pin, including entering with it held.
+    // Sway's floating_modifier drag (Super+mouse) never reaches the window,
+    // so arm the same geometry watch when Super reaches a hovered pin,
+    // including entering with it held.
     if (hovered_ && modifiers.testFlag(Qt::MetaModifier))
       beginDragWatch(true);
   }
@@ -1368,7 +1384,7 @@ protected:
   }
 
   void closeEvent(QCloseEvent *event) override {
-    // Hyprland consumes Super+W and closes its active compositor window,
+    // A compositor kill binding closes its active compositor window,
     // which can still be a pin underneath the exclusive layer-shell editor.
     // Explicit pin actions and expiry use non-spontaneous close events.
     if (event->spontaneous() && dismissActiveOverlay()) {
@@ -1628,9 +1644,9 @@ int runPinnedCapture(const QString &path, PinLifetime lifetime) {
                               [&](const CompositorPin &pin) { return pin.title == title; });
       if (own == placement.pins.end())
         return {};
-      if (!own->floating && !hyprDispatch(pinFloatDispatch(own->address)))
+      if (!own->floating && !swayDispatch(pinFloatDispatch(own->address)))
         return {};
-      if (!own->pinned && !hyprDispatch(pinPinDispatch(own->address)))
+      if (!own->pinned && !swayDispatch(pinPinDispatch(own->address)))
         return {};
       // A new capture is the front of the idle deck. Keep an already-open
       // fan exposed, and never rearrange pins during somebody else's drag.
@@ -1668,18 +1684,7 @@ int runPinnedCapture(const QString &path, PinLifetime lifetime) {
   // Register before mapping: a post-capture preview must not take keyboard
   // focus from the app the user is returning to. Hovering subsequently
   // follows normal mouse focus so pin shortcuts target the hovered capture.
-  const auto applyRules = [] {
-    bool ok = false;
-    const QString output = runForOutput(
-        QStringLiteral("hyprctl"),
-        {QStringLiteral("eval"),
-         QStringLiteral("hl.window_rule({ name = \"omasnap-pins\", "
-                        "match = { class = \"^omasnap$\", title = \"^omasnap-pin [0-9]+$\" }, "
-                        "float = true, pin = true, no_initial_focus = true, "
-                        "no_follow_mouse = false, border_size = 0, rounding = 0, "
-                        "no_shadow = true, no_blur = true })")}, &ok);
-    return ok && !output.contains(QStringLiteral("error"), Qt::CaseInsensitive);
-  };
+  const auto applyRules = [] { return registerSwayPinRules(); };
   auto *rules = new QFutureWatcher<bool>(&window);
   QObject::connect(rules, &QFutureWatcher<bool>::finished, &window,
                    [&window, rules, monitor, applyRules, attempts = 0]() mutable {

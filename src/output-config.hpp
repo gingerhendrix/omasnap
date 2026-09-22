@@ -3,6 +3,7 @@
 #pragma once
 
 #include <QDateTime>
+#include <QSize>
 #include <QString>
 
 struct OutputConfig {
@@ -34,9 +35,11 @@ struct OutputConfig {
  *  compositor to float it at its natural size; tiled leaves it to the
  *  layout. */
 [[nodiscard]] bool loadEditorWindowFloating(const QString &filePath);
-/** Lua chunk registering (or, tiled, disabling) the compositor rule that
- *  floats and centers the editor window as it maps. */
-[[nodiscard]] QString editorFloatRuleScript(bool floating);
+/** Sway command list that floats the mapped editor container, sizes its
+ *  content to `size`, and centers it. Sway rules cannot be withdrawn, so
+ *  the editor is floated after it maps rather than by a registered rule. */
+[[nodiscard]] QString editorFloatCommand(const QString &containerId,
+                                         const QSize &size);
 
 /** True unless [editor] backdrop = translucent: a windowed editor paints a
  *  solid backdrop instead of the overlay's see-through dim. */

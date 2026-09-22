@@ -17,7 +17,7 @@ bool runPinInteractionSmoke(QString &error) {
   }
   // Clipboard and compositor calls must not touch the developer's session.
   // An editor child exits in the smoke entry point before creating any UI.
-  for (const QString &name : {QStringLiteral("hyprctl"), QStringLiteral("wl-copy"),
+  for (const QString &name : {QStringLiteral("swaymsg"), QStringLiteral("wl-copy"),
                               QStringLiteral("wl-paste")}) {
     QFile command(runtime.filePath(name));
     if (!command.open(QIODevice::WriteOnly) ||

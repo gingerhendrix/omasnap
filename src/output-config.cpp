@@ -63,20 +63,12 @@ bool loadEditorWindowMode(const QString &filePath) {
              .toLower() == QStringLiteral("window");
 }
 
-QString editorFloatRuleScript(bool floating) {
-  // Registered before the editor window maps: floated after the fact, the
-  // window tiles for a frame and visibly pops out. The named rule
-  // coalesces across editors, and a tiled config re-registers it disabled
-  // so a floating session's rule cannot leak into tiled use. The title
-  // pattern skips the pins, whose titles have no space after the name.
-  return floating ? QStringLiteral(
-                        "hl.window_rule({ name = \"omasnap-editor-float\", "
-                        "match = { title = \"^omasnap( .+)?$\" }, "
-                        "float = true, center = true })")
-                  : QStringLiteral(
-                        "hl.window_rule({ name = \"omasnap-editor-float\", "
-                        "match = { title = \"^omasnap( .+)?$\" }, "
-                        "enabled = false })");
+QString editorFloatCommand(const QString &containerId, const QSize &size) {
+  return QStringLiteral("[con_id=%1] floating enable, resize set width %2 px "
+                        "height %3 px, move position center")
+      .arg(containerId)
+      .arg(size.width())
+      .arg(size.height());
 }
 
 bool loadEditorWindowFloating(const QString &filePath) {

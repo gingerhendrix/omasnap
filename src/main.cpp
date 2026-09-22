@@ -11,6 +11,7 @@
 #include "pin-file.hpp"
 #include "recent-snaps.hpp"
 #include "startup-timing.hpp"
+#include "sway-ipc.hpp"
 
 #include <LayerShellQt/Window>
 
@@ -107,21 +108,6 @@ private:
   bool sigtermInstalled_ = false;
   QSocketNotifier *notifier_ = nullptr;
 };
-// All compositor IPC runs on a worker, including the pre-map rules. A
-// missing or wedged hyprctl is bounded and never stalls a visible editor.
-QByteArray hyprctlOutput(const QStringList &arguments) {
-  QProcess process;
-  process.start(QStringLiteral("hyprctl"), arguments);
-  if (!process.waitForFinished(500)) {
-    process.kill();
-    process.waitForFinished(500);
-    return {};
-  }
-  if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
-    return {};
-  return process.readAllStandardOutput();
-}
-
 } // namespace
 
 int main(int argc, char **argv) {
@@ -461,18 +447,13 @@ int main(int argc, char **argv) {
     // that path is accepted as the tiled look.
     editor.setMinimumSize(640, 420);
     editor.resize(naturalSize);
-    // Both rules registered before the window maps, so the compositor
-    // floats, centers, and keeps it opaque from the first frame instead of
-    // tiling briefly and popping out.
+    // Sway rules cannot be withdrawn, so a tiled config could never undo a
+    // registered float rule. Float, size, and center the container once it
+    // maps instead; it can show tiled for a frame before it floats.
     const bool floatingWindow = loadEditorWindowFloating(defaultConfigPath());
-    auto *rules = new QFutureWatcher<void>(&editor);
-    QObject::connect(rules, &QFutureWatcher<void>::finished, &editor,
-                     [&editor, rules, floatingWindow, naturalSize] {
-      rules->deleteLater();
-      editor.show();
-      editor.setFocus(Qt::ActiveWindowFocusReason);
-      if (!floatingWindow)
-        return;
+    editor.show();
+    editor.setFocus(Qt::ActiveWindowFocusReason);
+    if (floatingWindow) {
       auto *settle = new QTimer(&editor);
       settle->setInterval(50);
       settle->setSingleShot(true);
@@ -489,46 +470,30 @@ int main(int argc, char **argv) {
       const auto placementApplied = std::make_shared<bool>(false);
       QObject::connect(settle, &QTimer::timeout, &editor, [probe, naturalSize, placementApplied] {
         const qint64 pid = QCoreApplication::applicationPid();
+        // All compositor IPC runs on a worker. swaymsg is bounded, so a
+        // missing or wedged one never stalls a visible editor.
         probe->setFuture(QtConcurrent::run([pid, naturalSize, placementApplied] {
-          const QJsonArray clients = QJsonDocument::fromJson(
-              hyprctlOutput({QStringLiteral("-j"), QStringLiteral("clients")})).array();
-          for (const QJsonValue &value : clients) {
-            const QJsonObject client = value.toObject();
-            if (client.value(QStringLiteral("pid")).toInteger() != pid)
+          for (const SwayWindow &window : swayWindows()) {
+            if (window.pid != pid || window.appId != QStringLiteral("omasnap"))
               continue;
-            const bool floating = client.value(QStringLiteral("floating")).toBool();
-            const QJsonArray size = client.value(QStringLiteral("size")).toArray();
-            const bool sized = size.size() == 2 &&
-                std::abs(size.at(0).toInt() - naturalSize.width()) <= 1 &&
-                std::abs(size.at(1).toInt() - naturalSize.height()) <= 1;
-            if (*placementApplied && floating && sized)
+            const bool sized =
+                std::abs(window.contentSize.width() - naturalSize.width()) <= 1 &&
+                std::abs(window.contentSize.height() - naturalSize.height()) <= 1;
+            if (*placementApplied && window.floating && sized)
               return true;
-            const QString selector = QStringLiteral("window = \"pid:%1\"").arg(pid);
-            const auto dispatch = [](const QString &command) {
-              return hyprctlOutput({QStringLiteral("dispatch"), command}).trimmed() == "ok";
-            };
-            if (!floating && !dispatch(QStringLiteral("hl.dsp.window.float({ %1 })").arg(selector)))
-              return false;
-            if (!dispatch(QStringLiteral("hl.dsp.window.resize({ x = %1, y = %2, relative = false, %3 })")
-                              .arg(naturalSize.width()).arg(naturalSize.height()).arg(selector)) ||
-                !dispatch(QStringLiteral("hl.dsp.window.center({ %1 })").arg(selector)))
+            if (!swayCommand(editorFloatCommand(QString::number(window.id),
+                                                naturalSize)))
               return false;
             *placementApplied = true;
             // A successful command precedes the compositor's state update.
-            // Probe again rather than treating dispatch as confirmed placement.
+            // Probe again rather than treating the reply as confirmed placement.
             return false;
           }
           return false;
         }));
       });
       settle->start();
-    });
-    rules->setFuture(QtConcurrent::run([floatingWindow] {
-      hyprctlOutput({QStringLiteral("eval"), editorFloatRuleScript(floatingWindow)});
-      hyprctlOutput({QStringLiteral("eval"),
-                     QStringLiteral("hl.window_rule({ name = \"omasnap-editor-opaque\", "
-                                    "match = { title = \"^omasnap( .+)?$\" }, opacity = 1 })")});
-    }));
+    }
     return application.exec();
   }
   editor.setGeometry(targetScreen->geometry());

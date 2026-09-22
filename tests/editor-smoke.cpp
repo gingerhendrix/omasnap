@@ -2223,15 +2223,12 @@ bool runTextOutlineCheck(QString &error) {
 bool runEditorWindowConfigCheck(QString &error) {
   const QString path =
       QDir(QDir::tempPath()).filePath(QStringLiteral("omasnap-editor-mode.conf"));
-  const QString floatRule = editorFloatRuleScript(true);
-  const QString tiledRule = editorFloatRuleScript(false);
-  if (!floatRule.contains(QStringLiteral("float = true")) ||
-      !floatRule.contains(QStringLiteral("center = true")) ||
-      tiledRule.contains(QStringLiteral("float = true")) ||
-      !tiledRule.contains(QStringLiteral("enabled = false")) ||
-      !floatRule.contains(QStringLiteral("omasnap-editor-float")) ||
-      !tiledRule.contains(QStringLiteral("omasnap-editor-float"))) {
-    error = QStringLiteral("Editor float rule script is wrong");
+  // One command list addressed to the mapped container: resizing a tiled
+  // container or centering before floating would act on the layout.
+  if (editorFloatCommand(QStringLiteral("17"), QSize(928, 910)) !=
+      QStringLiteral("[con_id=17] floating enable, resize set width 928 px "
+                     "height 910 px, move position center")) {
+    error = QStringLiteral("Editor float command is wrong");
     return false;
   }
   const auto writeConf = [&path](const QString &body) {
