@@ -83,6 +83,15 @@ pinInsertionPlan(QVector<QPair<QString, QRect>> column,
 /// Rules registered before a pin maps: never take focus on creation, and
 /// float, stick, and drop the border as soon as the view appears.
 [[nodiscard]] QStringList pinRuleCommands();
+/// Arguments that reopen a pin's document in the editor. A non-empty
+/// `output` names the output the pin shows on, so the editor opens there
+/// instead of on Qt's primary screen.
+[[nodiscard]] QStringList pinEditorArguments(const QString &documentPath,
+                                             const QString &output);
+/// Name of the active `get_outputs` entry that holds the center of `rect`,
+/// in global logical coordinates. Without one, the output that overlaps it
+/// most. Empty when `rect` touches no active output.
+[[nodiscard]] QString pinOutputName(const QJsonArray &outputs, const QRect &rect);
 /// Global logical geometry of a `get_outputs` entry.
 [[nodiscard]] QRect pinMonitorGeometry(const QJsonObject &output);
 /// Global logical geometry less reserved bar space: the visible workspace

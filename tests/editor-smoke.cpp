@@ -2231,6 +2231,19 @@ bool runEditorWindowConfigCheck(QString &error) {
     error = QStringLiteral("Editor float command is wrong");
     return false;
   }
+  // A named output moves the editor before it is centered, then focuses it
+  // there. An unsafe name is dropped instead of breaking the command.
+  if (editorFloatCommand(QStringLiteral("17"), QSize(928, 910),
+                         QStringLiteral("HDMI-A-1")) !=
+          QStringLiteral("[con_id=17] floating enable, move container to output "
+                         "\"HDMI-A-1\", resize set width 928 px height 910 px, "
+                         "move position center, focus") ||
+      editorFloatCommand(QStringLiteral("17"), QSize(928, 910),
+                         QStringLiteral("bad\"name")) !=
+          editorFloatCommand(QStringLiteral("17"), QSize(928, 910))) {
+    error = QStringLiteral("Editor float command ignored or mangled the output");
+    return false;
+  }
   const auto writeConf = [&path](const QString &body) {
     QFile file(path);
     file.open(QIODevice::WriteOnly | QIODevice::Truncate);

@@ -523,5 +523,57 @@ bool runPinLayoutSmoke(QString &error) {
     error = QStringLiteral("A workspace rect escaped its output");
     return false;
   }
+  // Edit opens the editor on the pin's output, not on Qt's primary screen.
+  // The primary output is listed first, as Sway and Qt both report it.
+  const QJsonArray outputs{
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("eDP-1")},
+                  {QStringLiteral("rect"), jsonRect({0, 0, 1920, 1200})}},
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("HDMI-A-1")},
+                  {QStringLiteral("rect"), jsonRect({1920, 0, 2560, 1440})}},
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("DP-3")},
+                  {QStringLiteral("active"), false},
+                  {QStringLiteral("rect"), jsonRect({4480, 0, 1920, 1080})}},
+      rotated};
+  const QList<QPair<QRect, QString>> pinOutputs{
+      {{4266, 1313, 200, 113}, QStringLiteral("HDMI-A-1")},
+      {{1706, 1073, 200, 113}, QStringLiteral("eDP-1")},
+      {{-900, 1800, 200, 113}, QStringLiteral("DP-2")},
+      // A card that straddles the seam goes to the output under its center.
+      {{1822, 400, 200, 113}, QStringLiteral("HDMI-A-1")},
+      // Center off every output, below eDP-1's bottom edge: the output it
+      // overlaps most wins.
+      {{1800, 1180, 200, 113}, QStringLiteral("HDMI-A-1")},
+      // A disabled output never claims a pin.
+      {{4600, 100, 200, 113}, QString()},
+      {{9000, 9000, 200, 113}, QString()}};
+  for (const auto &[rect, expected] : pinOutputs) {
+    if (pinOutputName(outputs, rect) != expected) {
+      error = QStringLiteral("Pin at %1,%2 resolved to output '%3', expected '%4'")
+                  .arg(rect.x())
+                  .arg(rect.y())
+                  .arg(pinOutputName(outputs, rect), expected);
+      return false;
+    }
+  }
+  const QString document = QStringLiteral("/run/user/1000/omasnap/pin-doc.png");
+  if (pinEditorArguments(document, QStringLiteral("HDMI-A-1")) !=
+          QStringList{QStringLiteral("--file"), document,
+                      QStringLiteral("--pin-document"), document,
+                      QStringLiteral("--handoff-monitor"), QStringLiteral("HDMI-A-1")} ||
+      pinEditorArguments(document, {}) !=
+          QStringList{QStringLiteral("--file"), document,
+                      QStringLiteral("--pin-document"), document}) {
+    error = QStringLiteral("Pin editor arguments lost the pin's output");
+    return false;
+  }
+  // The editor's own parser accepts the handoff it is given.
+  QCommandLineParser editorParser;
+  configureCaptureCommandLine(editorParser);
+  if (!editorParser.parse(QStringList{QStringLiteral("omasnap")} +
+                          pinEditorArguments(document, QStringLiteral("HDMI-A-1"))) ||
+      editorParser.value(QStringLiteral("handoff-monitor")) != QStringLiteral("HDMI-A-1")) {
+    error = QStringLiteral("The editor did not parse the pin's output");
+    return false;
+  }
   return true;
 }

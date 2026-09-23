@@ -287,6 +287,37 @@ QStringList pinRuleCommands() {
               .arg(kPinCriteria)};
 }
 
+QStringList pinEditorArguments(const QString &documentPath,
+                               const QString &output) {
+  QStringList arguments{QStringLiteral("--file"), documentPath,
+                        QStringLiteral("--pin-document"), documentPath};
+  if (!output.isEmpty())
+    arguments << QStringLiteral("--handoff-monitor") << output;
+  return arguments;
+}
+
+QString pinOutputName(const QJsonArray &outputs, const QRect &rect) {
+  QString best;
+  qint64 bestArea = 0;
+  for (const QJsonValue value : outputs) {
+    const QJsonObject output = value.toObject();
+    // Sway lists disabled outputs too; they have no usable geometry.
+    if (!output.value(QStringLiteral("active")).toBool(true))
+      continue;
+    const QRect geometry = pinMonitorGeometry(output);
+    const QString name = output.value(QStringLiteral("name")).toString();
+    if (geometry.contains(rect.center()))
+      return name;
+    const QRect overlap = geometry.intersected(rect);
+    const qint64 area = static_cast<qint64>(overlap.width()) * overlap.height();
+    if (area > bestArea) {
+      best = name;
+      bestArea = area;
+    }
+  }
+  return best;
+}
+
 QRect pinMonitorGeometry(const QJsonObject &output) {
   // Sway's output rect is already logical, scaled, and transformed.
   const QJsonObject rect = output.value(QStringLiteral("rect")).toObject();

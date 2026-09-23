@@ -63,12 +63,24 @@ bool loadEditorWindowMode(const QString &filePath) {
              .toLower() == QStringLiteral("window");
 }
 
-QString editorFloatCommand(const QString &containerId, const QSize &size) {
-  return QStringLiteral("[con_id=%1] floating enable, resize set width %2 px "
-                        "height %3 px, move position center")
-      .arg(containerId)
-      .arg(size.width())
-      .arg(size.height());
+QString editorFloatCommand(const QString &containerId, const QSize &size,
+                           const QString &output) {
+  QString command = QStringLiteral("[con_id=%1] floating enable").arg(containerId);
+  // Sway maps a new window on the focused workspace. Move it to the output
+  // that asked for the editor before centering it there, and keep focus
+  // on it. Quotes and backslashes cannot occur in a real output name.
+  const bool moveToOutput = !output.isEmpty() &&
+                            !output.contains(QLatin1Char('"')) &&
+                            !output.contains(QLatin1Char('\\'));
+  if (moveToOutput)
+    command += QStringLiteral(", move container to output \"%1\"").arg(output);
+  command += QStringLiteral(", resize set width %1 px height %2 px, "
+                            "move position center")
+                 .arg(size.width())
+                 .arg(size.height());
+  if (moveToOutput)
+    command += QStringLiteral(", focus");
+  return command;
 }
 
 bool loadEditorWindowFloating(const QString &filePath) {

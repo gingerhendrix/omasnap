@@ -37,6 +37,7 @@
 #include <QPixmap>
 #include <QProcess>
 #include <QSocketNotifier>
+#include <QScreen>
 #include <QShowEvent>
 #include <QCloseEvent>
 #include <QJsonArray>
@@ -1220,16 +1221,29 @@ protected:
   }
 
   void reopenInEditor() {
+    // Without an output the editor falls back to Qt's primary screen, which
+    // need not be the one showing this pin. Qt's own screen is read here on
+    // the GUI thread, as a fallback for when Sway cannot be asked.
+    const QString qtOutput = screen() ? screen()->name() : QString();
     runAction([program = QCoreApplication::applicationFilePath(), path = path_,
-               document = pinDocument_]() mutable -> ActionResult {
+               document = pinDocument_, title = windowTitle(),
+               qtOutput]() mutable -> ActionResult {
       QString error;
       if (!document)
         document = copyPinDocument(path, error);
       if (!document)
         return {error, {}, {}};
-      const QStringList arguments{QStringLiteral("--file"), document->path(),
-                                   QStringLiteral("--pin-document"), document->path()};
-      if (!QProcess::startDetached(program, arguments))
+      QString output;
+      for (const CompositorPin &pin : compositorPinRects()) {
+        if (pin.title == title) {
+          output = pinOutputName(compositorMonitors().outputs, pin.rect);
+          break;
+        }
+      }
+      if (output.isEmpty())
+        output = qtOutput;
+      if (!QProcess::startDetached(program,
+                                   pinEditorArguments(document->path(), output)))
         return {QStringLiteral("Could not start omasnap"), {}, document};
       return {{}, {}, document};
     }, {});

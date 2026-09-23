@@ -37,9 +37,12 @@ struct OutputConfig {
 [[nodiscard]] bool loadEditorWindowFloating(const QString &filePath);
 /** Sway command list that floats the mapped editor container, sizes its
  *  content to `size`, and centers it. Sway rules cannot be withdrawn, so
- *  the editor is floated after it maps rather than by a registered rule. */
+ *  the editor is floated after it maps rather than by a registered rule.
+ *  A non-empty `output` first moves the container to that output and then
+ *  focuses it there. */
 [[nodiscard]] QString editorFloatCommand(const QString &containerId,
-                                         const QSize &size);
+                                         const QSize &size,
+                                         const QString &output = {});
 
 /** True unless [editor] backdrop = translucent: a windowed editor paints a
  *  solid backdrop instead of the overlay's see-through dim. */

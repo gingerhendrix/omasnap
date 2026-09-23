@@ -411,6 +411,11 @@ int main(int argc, char **argv) {
   }
 
   const QSize editingPreview = capture.previewSize;
+  // Only a name Qt knows as a screen is safe to hand to Sway: a stale one
+  // would fail the whole placement command.
+  const QString targetOutput =
+      targetScreen && targetScreen->name() == capture.monitor.name
+          ? capture.monitor.name : QString();
   CaptureEditor editor(std::move(capture), captureMode, quickOutputMode,
                        restoredLog, nullptr, editorWindowMode && !editingImage);
   editor.setPinDocument(std::move(pinDocument));
@@ -468,11 +473,13 @@ int main(int argc, char **argv) {
         }
       });
       const auto placementApplied = std::make_shared<bool>(false);
-      QObject::connect(settle, &QTimer::timeout, &editor, [probe, naturalSize, placementApplied] {
+      QObject::connect(settle, &QTimer::timeout, &editor,
+                       [probe, naturalSize, placementApplied, targetOutput] {
         const qint64 pid = QCoreApplication::applicationPid();
         // All compositor IPC runs on a worker. swaymsg is bounded, so a
         // missing or wedged one never stalls a visible editor.
-        probe->setFuture(QtConcurrent::run([pid, naturalSize, placementApplied] {
+        probe->setFuture(QtConcurrent::run([pid, naturalSize, placementApplied,
+                                            targetOutput] {
           for (const SwayWindow &window : swayWindows()) {
             if (window.pid != pid || window.appId != QStringLiteral("omasnap"))
               continue;
@@ -482,7 +489,7 @@ int main(int argc, char **argv) {
             if (*placementApplied && window.floating && sized)
               return true;
             if (!swayCommand(editorFloatCommand(QString::number(window.id),
-                                                naturalSize)))
+                                                naturalSize, targetOutput)))
               return false;
             *placementApplied = true;
             // A successful command precedes the compositor's state update.
