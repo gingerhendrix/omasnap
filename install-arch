@@ -3,7 +3,10 @@ set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 prefix="${OMASNAP_PREFIX:-$HOME/.local}"
-build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/omasnap-sway/build"
+# CMake ties a build folder to one source path. Key it to the checkout so
+# two worktrees never share, and break, the same cache.
+checkout_key="$(printf '%s' "$repo_dir" | sha1sum | cut -c1-12)"
+build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/omasnap-sway/build-$checkout_key"
 
 required=(cmake ninja pkg-config wayland-scanner swaymsg wl-copy wl-paste notify-send tesseract)
 for command_name in "${required[@]}"; do
@@ -19,4 +22,4 @@ cmake -S "$repo_dir" -B "$build_dir" -G Ninja \
 cmake --build "$build_dir" --parallel
 cmake --install "$build_dir"
 
-"$prefix/bin/omasnap" --version
+QT_QPA_PLATFORM=offscreen "$prefix/bin/omasnap" --version

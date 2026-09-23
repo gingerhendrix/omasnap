@@ -5,7 +5,6 @@ Comment=Capture and annotate screenshots on Sway
 Exec=omasnap
 Icon=camera-photo
 Terminal=false
-NoDisplay=true
 Categories=Graphics;
 Keywords=screenshot;screen capture;annotation;Sway;Wayland;
 StartupNotify=false

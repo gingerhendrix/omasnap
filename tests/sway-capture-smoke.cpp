@@ -2,6 +2,7 @@
 #include "sway-capture-smoke.hpp"
 
 #include "capture.hpp"
+#include "sway-ipc.hpp"
 
 #include <QFile>
 
@@ -30,9 +31,49 @@ bool expectInvalidOutput(const QByteArray &json, const QString &detail,
                                         : parseError);
   return false;
 }
+
+bool runSwayIpcChecks(QString &error) {
+  if (!expect(swayCommandSucceeded(
+                  QByteArrayLiteral(R"json([{"success":true},{"success":true}])json")) &&
+                  !swayCommandSucceeded(QByteArrayLiteral(
+                      R"json([{"success":true},{"success":false,"error":"No matching node."}])json")) &&
+                  !swayCommandSucceeded(QByteArrayLiteral("[]")) &&
+                  !swayCommandSucceeded(QByteArray()),
+              QStringLiteral("Sway command replies were misread"), error))
+    return false;
+
+  // A sticky floating pin, a tiled editor, and a split container that holds
+  // no client and must not be reported as a view.
+  const QVector<SwayWindow> windows = parseSwayWindows(QByteArrayLiteral(R"json({
+    "type":"root","id":1,"nodes":[{"type":"output","id":2,"name":"DP-3","nodes":[
+      {"type":"workspace","id":3,"name":"1","nodes":[
+        {"type":"con","id":4,"name":"split","nodes":[
+          {"type":"con","id":7,"name":"omasnap shot.png","app_id":"omasnap",
+           "pid":900,"focused":true,
+           "rect":{"x":10,"y":30,"width":800,"height":622},
+           "window_rect":{"x":0,"y":22,"width":800,"height":600}}]}],
+       "floating_nodes":[
+        {"type":"floating_con","id":9,"name":"omasnap-pin 901","app_id":"omasnap",
+         "pid":901,"sticky":true,
+         "rect":{"x":2800,"y":1500,"width":320,"height":180},
+         "window_rect":{"x":0,"y":0,"width":320,"height":180}}]}]}]})json"));
+  return expect(
+      windows.size() == 2 && windows.at(0).id == 7 &&
+          windows.at(0).pid == 900 && windows.at(0).focused &&
+          !windows.at(0).floating &&
+          windows.at(0).contentSize == QSize(800, 600) &&
+          windows.at(1).id == 9 &&
+          windows.at(1).title == QStringLiteral("omasnap-pin 901") &&
+          windows.at(1).floating && windows.at(1).sticky &&
+          windows.at(1).rect == QRect(2800, 1500, 320, 180),
+      QStringLiteral("Sway view list lost a view, a flag, or its bounds"),
+      error);
+}
 } // namespace
 
 bool runSwayCaptureSmoke(QString &error) {
+  if (!runSwayIpcChecks(error))
+    return false;
   MonitorInfo monitor;
   if (!parseSwayOutputs(fixture(QStringLiteral("sway-outputs.json")), monitor,
                         error))
@@ -86,8 +127,11 @@ bool runSwayCaptureSmoke(QString &error) {
           windows.size() == 3 &&
               windows.at(0).rect == QRect(80, 100, 600, 400) &&
               windows.at(1).rect == QRect(0, 700, 480, 300) &&
+              windows.at(0).appClass == QStringLiteral("dev.editor") &&
               windows.at(1).title == QStringLiteral("LegacyApp") &&
-              windows.at(2).rect == QRect(900, 300, 700, 500),
+              windows.at(1).appClass == QStringLiteral("LegacyApp") &&
+              windows.at(2).rect == QRect(900, 300, 700, 500) &&
+              windows.at(2).appClass == QStringLiteral("notes"),
           QStringLiteral("Recursive Sway tree discovery or clipping regressed"),
           error))
     return false;

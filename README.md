@@ -1,35 +1,68 @@
-> **Fork note:** This is an AI-maintained fork of [tobi’s Omasnap](https://github.com/tobi/omasnap) for vanilla Arch Linux and Sway.
+> **Fork note:** This is an AI-maintained fork of [Omasnap](https://github.com/omacom/omasnap) for vanilla Arch Linux and Sway. It tracks upstream v1.21.0.
 
 # Omasnap for Sway
+
+See the [changelog](CHANGELOG.md) for upstream release highlights. Sway-specific
+behaviour and its limits are described under [Platform scope](#platform-scope).
 
 A native Wayland screenshot and annotation overlay adapted for Sway.
 It captures the focused monitor before mapping an exclusive layer-shell surface, so the
 editor never appears in its own screenshot. The editor retains annotations as movable,
 resizable vector layers and preserves the monitor's native pixels on scaled displays.
 
+Select a capture and it copies straight to the clipboard, with a floating preview for
+copying again, dragging into another app, or opening the editor on demand.
+The preview fades after 10 seconds of idle time. Hovering and unfinished actions
+pause its countdown; only the pin button or `Ctrl+P` keeps it on screen.
+
 [![Looping Omasnap demonstration](assets/omasnap.gif)](assets/omasnap.mp4)
 
 ## Features
 
-- Freeform region, window, and full-monitor capture modes.
+- Smart selection by default: drag a freeform region, click a window to crop
+  it, or click open monitor space for the full monitor. Explicit region,
+  window, fullscreen, and scrolling-region modes remain available.
+- Fresh captures copy immediately and show a floating preview for 10 seconds
+  without taking keyboard focus. Hover for Pin, Edit, Copy, file drag, and Close
+  controls. Use the pin button or `Ctrl+P` to keep it on screen.
 - A pointer-side readout that turns any drag into a ruler: the pointer position
   while the crosshair is idle, then the frame size in native export pixels while a
   region, a hovered window, or a crop handle is being sized.
 - Window capture is a crop of the focused-monitor frame. Overlapping windows stay
   visible; there is no second clean-window recapture.
 - Select/move/resize layers, mouse-wheel scaling, and eight external recropping handles.
-- Arrows, straight lines, smoothed freehand strokes, translucent highlighter strokes,
-  hollow or filled rectangles (optionally rounded) and ellipses, numbered markers,
-  editable Neucha text (on a readability pill), and secure redaction with opaque or
-  randomized non-spatial mosaic output.
+- Start arrows, shapes, strokes, markers, spotlights, or text in the unused
+  fullscreen workspace around a screenshot, or resize and carry an existing
+  layer past its edge, to grow the canvas. Source-based tools (redact, cut,
+  OCR, and eyedropper) stay on the screenshot.
+  Framed growth is the default; `G` cycles to tight Overflow growth (only the
+  sides needed by annotations, with no frame), then Image (the original canvas
+  size, clipping every outside annotation). `Shift+G` cycles backward without
+  changing layer geometry. New framed strips start in window gray with the
+  original screenshot's card shadow. `B` cycles through the colorful backdrops,
+  shadowed and flat window gray, and Off so a background can always be removed.
+  Overflow with no backdrop leaves its added pixels transparent. `Shift+B`
+  toggles the current shadow directly, and undo/delete can contract grown strips.
+- Standard, pointy, curved, and double-headed arrows; straight lines; smoothed
+  freehand strokes; and translucent highlighter
+  strokes that automatically match and stay straight across screenshot text (with
+  freehand fallback), plus hollow or filled rectangles (optionally rounded) and
+  ellipses, numbered markers, editable text in Neucha, JetBrains Mono, or Inter
+  Display (plain, outlined, or on a readability pill), and secure redaction with
+  opaque or randomized non-spatial mosaic output.
 - Per-layer preset or custom colors (including highlighter ink), undo/redo history,
   one-click whole-image or drag-region OCR (the recognized text is shown beside
   the image and copied to the clipboard),
-  mesh-gradient backdrops, and rendered drop shadows.
+  mesh-gradient backdrops, and rendered drop shadows on standard backdrop cards.
 - Cut tool: drag across a band of the image to remove it and collapse the gap, with a
   live preview and dashed seam marker while dragging; annotations shift to follow.
-- Pin a finished capture as a bottom-right always-on-top layer surface, launched
+- Pin a finished capture as a bottom-right floating, sticky Sway window, launched
   from the same `omasnap` executable and visible on every workspace.
+  Pins form a compact deck with the recents shelf's alternating tilt while
+  idle; hover to straighten and fan them out.
+  Dropping a pin partly off-screen or underneath a bar brings it fully back
+  inside the monitor where the drag started, with the same 14-pixel gap as
+  the stack from any screen edge or reserved bar area.
 - Crash-resistant working documents under `/run/user/<UID>/omasnap/` (falling back to
   a private `/tmp/omasnap-<UID>/`): the original source image plus a sidecar JSON
   operation log. Undo still works after a crash or `--file` reopen. Saving and
@@ -37,6 +70,9 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
 - Verified PNG clipboard output through `wl-copy`/`wl-paste`, plus timestamped files
   under `~/Pictures/Screenshots` by default.
 - Open an image already on the clipboard directly in the annotation editor.
+- A recents shelf: the select overlay stacks small cards of the last five captures
+  along the right edge; hover to fan them out, click one to reopen it in the editor
+  with its layers still editable instead of taking a new screenshot.
 - Correct native-pixel export on fractional or integer-scaled monitors.
 
 ## Platform scope
@@ -45,17 +81,37 @@ The supported target is **Wayland + Sway**. Focused-output and visible-window di
 use Sway IPC through `swaymsg`. The focused output is captured in-process through
 `ext-image-copy-capture` before the layer maps. Region and full-output selection use
 that frozen frame directly. Window selection recursively reads Sway's tiled and
-floating container tree, clips the selected container to the focused output, and crops
-the same frozen frame. This visible-window fallback intentionally includes decorations
-and any overlapping content; it does not require a foreign-toplevel capture-source
-manager, which Sway 1.11 does not provide.
+floating container tree, supports named workspaces, clips the selected container to
+the focused output, and crops the same frozen frame. This visible-window crop
+intentionally includes decorations and any overlapping content. It needs no
+foreign-toplevel capture source, which Sway 1.11 does not provide.
+
+Pins and the windowed editor are ordinary Sway windows, placed through `swaymsg`:
+
+- Pins float, stay sticky on every workspace, and have no border. Omasnap registers a
+  `no_focus` rule and a `for_window` rule for pin windows once per Sway session, so a
+  new pin never takes focus. It does not edit your Sway configuration.
+- The work area for the stack is the visible workspace rectangle, so bars on any edge
+  are respected.
+- Sway has no always-on-top state for floating windows. A focused floating window
+  can cover the pins until a pin is hovered again.
+- Sway has no cursor-position query. The fan closes when the pointer leaves the
+  pin that opened it and does not enter another card within a short delay.
+- After `swaymsg reload`, Sway forgets the runtime rules. Pins still float and stick,
+  but they can take focus when created until the next Sway session.
+- The windowed editor is floated, sized, and centered after it maps. It can show
+  tiled for one frame.
+- Auto scroll capture always uses the wlr virtual pointer. Sway applies natural
+  scrolling per input device, so the policy for an injected uinput mouse is unknown.
 
 Runtime commands used by the application:
 
 - `swaymsg` (with `SWAYSOCK` set by Sway)
 - `wl-copy` and `wl-paste`
 - `tesseract`
-- `notify-send`; notification failure does not invalidate output.
+- `notify-send`; saved captures include an image hint. There is no click-to-edit
+  action; reopen a saved file with `omasnap <path>`. Notification failure does not
+  invalidate output.
 
 ## Install on Arch Linux and Sway
 
@@ -76,8 +132,9 @@ Arch installer:
 ```
 
 The installer does not invoke a package manager or edit Sway configuration. It builds
-with Ninja under `${XDG_CACHE_HOME:-~/.cache}/omasnap-sway/build` and installs under
-`~/.local`. Set `OMASNAP_PREFIX` to choose another prefix.
+with Ninja under `${XDG_CACHE_HOME:-~/.cache}/omasnap-sway/`, in a build folder keyed
+to the checkout path, and installs under `~/.local`. Set `OMASNAP_PREFIX` to choose
+another prefix.
 
 ### Sway bindings
 
@@ -115,6 +172,12 @@ The install step places:
 - `~/.local/bin/omasnap`
 - `~/.local/share/applications/omasnap.desktop`
 - `~/.local/share/licenses/omasnap/Neucha-OFL.txt`
+- `~/.local/share/licenses/omasnap/JetBrainsMono-OFL.txt`
+- `~/.local/share/licenses/omasnap/Inter-OFL.txt`
+- `~/.local/share/licenses/omasnap/Lucide-ISC.txt`
+
+The desktop entry is visible to application launchers, so you can start a capture
+by searching for Omasnap, or use the Sway bindings above.
 
 Ensure `~/.local/bin` is on `PATH`, then verify the installed CLI:
 
@@ -125,7 +188,9 @@ omasnap --help
 
 ## CLI capture modes
 
-Running without arguments opens freeform region selection:
+Running without arguments opens smart selection. Drag for a freeform region,
+click a window to capture it, or click outside every window to capture the
+focused monitor:
 
 ```bash
 omasnap
@@ -139,20 +204,38 @@ omasnap --capture-window
 omasnap --capture-fullscreen
 ```
 
-Compatibility positional names are also accepted:
+Scroll capture stitches a region that is taller (or wider) than the screen:
+
+```bash
+omasnap --scroll
+```
+
+Drag a region, then pick a direction: **Scroll ↓ / →** scrolls the page
+yourself while omasnap captures each step, and **Auto ↓ / →** scrolls it for
+you, one acknowledged notch at a time, stopping when the page stops moving.
+The frames are aligned and stitched into one image, copied, and shown in a timed
+preview. Keep it with the pin button or `Ctrl+P`, or open its editor to annotate
+it; `Ctrl`+wheel zooms and the wheel scrolls it.
+
+Positional capture modes are also accepted:
 
 ```bash
 omasnap region
 omasnap windows
 omasnap fullscreen
-omasnap smart       # maps to region selection
+omasnap smart
 ```
 
-These options choose what is initially selected; the editor still controls whether the
-result is copied, saved, or both.
+These options choose what is initially selected. Completing a selection copies it
+and shows a preview that fades after 10 seconds of idle time unless kept. Existing
+previews and pins are ordinary compositor windows and remain visible in later
+screen captures; close or move them aside when they cover the next capture area.
 
-Quick output skips the annotation editor. Add `--copy` to copy only, `--save` to save
-only, or both flags to copy and save. Region and window captures output after selection;
+For annotation before any output, add `--editor overlay` or `--editor window`.
+The editor then controls whether the result is copied, saved, or both.
+
+Quick output skips the preview as well as the annotation editor. Add `--copy` to copy
+only, `--save` to save only, or both flags to copy and save. Region and window captures output after selection;
 fullscreen captures output immediately. Quick output cannot be combined with `--file`,
 `--clipboard`, or `--pin`.
 
@@ -203,10 +286,80 @@ omasnap --clipboard
 The clipboard must offer readable image data. Text-only clipboard contents return an
 error instead of opening an empty editor.
 
-File URLs are accepted too. Saved images can be reopened and re-annotated by passing
-their path to `omasnap`. Captures copied without saving are not retained on disk.
+File URLs are accepted too. Saved-capture notifications go through `notify-send`, which has
+no click command, so they carry the image but no reopen action. Every notification value is
+passed as its own argv word, without shell parsing.
 
-Environment overrides:
+### Recent captures
+
+Every capture finished from the editor (copied, saved, or both) keeps its working
+document, source plus operation log, on a shelf of the five most recent under
+`~/.local/state/omasnap/recent/` (`OMASNAP_RECENT_DIR` overrides). The select
+overlay shows them as a small stack of cards on the right; hovering fans them out
+and clicking one reopens that capture in the editor, undo history intact, in place
+of a new screenshot. Finishing a reopened capture replaces its shelf entry.
+
+### Configuration (optional)
+
+Omasnap has no settings UI and runs fine with no config at all. If you want to
+change where screenshots land or what they are called, create
+`~/.config/omasnap/omasnap.conf` (INI format); every key is optional:
+
+```ini
+[editor]
+# overlay (default): the editor fills the screen as a fullscreen overlay.
+# window: the editor opens as a normal compositor window, tiled or floated
+# by the compositor, so a capture can be annotated next to another window.
+# W switches a live editor between the two either way, and --editor
+# window|overlay overrides this per invocation.
+# This chooses the on-demand editor's presentation; fresh captures still
+# copy and show a timed preview unless --editor is explicitly passed.
+mode = overlay
+# floating (default): a windowed editor asks the compositor to float it at
+# the capture's natural size. tiled: it joins the tiling layout instead.
+window = floating
+# opaque (default): a windowed editor paints a solid backdrop.
+# translucent: it keeps the overlay's see-through dim.
+backdrop = opaque
+
+[output]
+# Where saved screenshots go. Default: ~/Pictures/Screenshots
+directory = ~/Pictures/Captures
+# Filename pattern, without extension (.png is appended).
+# Default: screenshot-{date}_{time}-{app}
+filename = screenshot-{date}_{time}-{app}
+
+[colors]
+# Up to eight preset colors for the palette, and the initial custom color.
+palette = #ff375f, #ff9f0a, #ffd60a, #30d158, #0a84ff, #bf5af2, #000000, #ffffff
+custom = #ff375f
+
+[background]
+# An image used as a "Custom" backdrop. B (or the toolbar button) cycles
+# through the four gradients, this image when readable, shadowed/flat window
+# gray, and Off.
+image = ~/Pictures/backdrops/desk.jpg
+# Style a fresh capture starts with: none, off, slate, aurora, sunset, lagoon,
+# violet, or custom. `none` still allows Framed canvas growth to add its
+# automatic window-gray mat; `off` stays transparent. `custom` only takes
+# effect once `image` above loads successfully.
+default = custom
+```
+
+Filename tokens:
+
+| Token | Expands to |
+|---|---|
+| `{date}` | `2026-08-23` (yyyy-MM-dd) |
+| `{time}` | `14-05-09` (HH-mm-ss) |
+| `{app}` | Slug of the app under the selection, e.g. `firefox`, `alacritty`, `nautilus` (from the Sway `app_id`, or the X11 class of an Xwayland window). Empty for fullscreen captures, file edits, and when nothing is known — the separator before or after it is dropped too, so the default pattern gives `screenshot-2026-08-23_14-05-09.png`. |
+
+The default keeps the date first so the folder always sorts chronologically:
+`screenshot-2026-08-23_14-05-09-firefox.png`. Anything else in the pattern is
+literal text (`screenshot-` is just a string). A name that already exists
+gets `-2`, `-3`, … appended.
+
+Environment overrides (`OMASNAP_SCREENSHOT_DIR` takes precedence over the config):
 
 ```bash
 OMASNAP_SCREENSHOT_DIR="$HOME/Pictures/Captures" omasnap
@@ -216,94 +369,173 @@ OMASNAP_OCR_LANGS="tha+eng" omasnap
 ```
 
 Install the corresponding Tesseract language data before adding a language to
-`OMASNAP_OCR_LANGS`. When unset, omasnap falls back to the legacy
-`OMARCHY_OCR_LANGS` environment variable, then to `eng`.
+`OMASNAP_OCR_LANGS`. When unset, omasnap falls back to Omarchy's
+`OMARCHY_OCR_LANGS` (which commonly includes the user's script, e.g.
+`tha+eng`), then to `eng`.
 
 ## Controls
 
 ### Capture selection
 
+The default smart picker infers the capture kind from the gesture: drag for a
+region, click a window for that window, or click open space for the full
+focused monitor. Whatever is lit is what will be captured.
+
+Press `S` before drawing to select a scrolling region; once drawn, the page
+inside it goes live and the scroll controls appear in place. A small **Scroll
+capture** button under an image already open in the editor turns that region
+into a scrolling capture. Explicit `region`, `windows`, `fullscreen`, and
+`scroll` command-line targets remain available for scripts and keybindings.
+
 | Input | Action |
 |---|---|
+| Click | In smart mode, capture the window under the pointer, or the full monitor outside any window |
 | Drag | Select a region, with its native pixel size shown at the pointer |
-| `Space` | Toggle region/window selection |
+| `S` | Toggle scrolling-region mode |
+| `R` | Restore the last region drawn this session (same monitor) |
 | `SUPER + Arrow` | Move among windows in window mode |
 | `Enter` | Capture the highlighted window |
 | `Ctrl+A` | Select the full focused monitor |
-| `Esc`, `Esc` | Dismiss |
+| Hover the right-edge stack | Fan out the five most recent captures; click one to reopen it |
+| `Esc` | Dismiss; cancel a selection drag if one is in progress |
 
 ### Annotation editor
 
 | Input | Action |
 |---|---|
-| `V` | Select/move/resize layers; drag empty canvas for a marquee; wheel scales the selected layer |
-| `A` | Arrow |
+| `V` | Select/move/resize layers; carrying one past the source grows the canvas; drag empty canvas for a marquee; multi-select outlines each layer without treating the canvas as one layer; wheel scales the selected layer |
+| `A` | Arrow; press again to cycle Standard, Pointy, Curved, and Double styles |
 | `S` | Spotlight/loupe; press again to cycle ellipse, rectangle, rounded |
 | `L` | Straight line |
-| `F` | Freehand stroke |
+| `F` | Freehand pen; medium `3/6` smoothing by default, while `0/6` preserves the raw pointer path |
+| `H` | Highlighter; Snap mode uses a mouse-following I-beam at the nearby text height, then locks the drag straight to that row. Press `H` again (or click the active toolbar button) for Normal freehand mode, where wheel or `Alt`+wheel changes thickness; Snap keeps detected-row height automatic and wheel sets only its off-text fallback |
 | `I` | Eyedropper in the color popover · sample the image as the custom color |
 | `C` | Numbered marker |
 | `R` | Rectangle; hover the shape button for rectangle, ellipse, and fill controls; `Alt`+wheel rounds corners |
 | `E` | Ellipse; shares the shape submenu and filled/hollow toggle |
 | `D` | Redact; press again to toggle randomized pixelation or solid redaction |
 | `X` | Cut out a band; drag to preview the crossed-out strip, then release to remove and collapse it |
-| `T` | Neucha text on a cream readability pill; Enter adds a line, clicking away keeps the text; press T again to toggle the pill |
+| `T` | Text on a cream readability pill, with Neucha as the default. Click for a one-line label, or drag a box to give it room for several lines: Enter moves to the next line while there is room and commits on the last one; `Shift+Enter` always adds a line; `Esc` commits the text and dismisses the annotator; long text wraps at the current canvas edge by default, while moving it or dragging its width handle beyond that edge expands the canvas; clicking away keeps the text; press T again to toggle the pill |
+| `Shift+T` | Cycle the next or selected text through Neucha, JetBrains Mono, and Inter Display |
 | `O` | Recognize and copy all text in the current image |
-| `B` | Cycle backdrop |
+| `B` | Cycle shadowed colors, window gray (shadowed and flat), and Off |
+| `Shift+B` | Toggle the screenshot card's drop shadow; on by default |
+| `G` / `Shift+G` | Cycle canvas boundaries forward/backward: Framed, Overflow, Image. Framed auto-grows with the normal frame; Overflow grows only the sides needed by annotations with no frame; Image clips at the original screenshot edge |
+| `W` | Re-present the editor as a normal compositor window, or back as the fullscreen overlay; selection, layers, and undo history carry over |
 | `1`–`8` | Set annotation color; `7` is black and `8` is white |
-| Wheel | Scale selected layer, magnify the spotlight under the cursor, or change active tool size (`Alt`+wheel: rectangle corner radius or spotlight border); while just viewing a zoomed capture, scroll it like a document |
+| Wheel | Scale selected layer, magnify the spotlight under the cursor, or change active tool size (`Alt`+wheel: selected pen smoothing from 0–6, the next pen's smoothing when none is selected, rectangle corner radius, or spotlight border); while just viewing a zoomed capture, scroll it like a document |
 | `Shift`+wheel | Scroll a zoomed capture sideways (a wide stitch); never changes the zoom |
 | `Ctrl`+wheel · middle-drag | Zoom about the cursor · pan by dragging |
 | `+` / `-` / `0` (also with `Ctrl`) | Zoom in / out / fit |
-| Hold `Shift` while dragging | Make rectangles, ellipses, and spotlights 1:1; snap lines and arrows to 45°; while dragging a selected layer's handle, keep a rectangle, redaction or spotlight's aspect ratio (lines and arrows: 45°) |
+| Hold `Shift` while dragging | Make rectangles, ellipses, and spotlights 1:1; snap line and arrow endpoints to 45°; keep curved-arrow bends centered; while dragging a selected layer's handle, keep a rectangle, redaction or spotlight's aspect ratio |
 | Hold `Alt` while dragging | Center rectangles, ellipses, and spotlights on the press point; add `Shift` for a centered square/circle |
 | `←` `↑` `→` `↓` | Nudge the selected layer 1 px; hold `Shift` for 10 px (a held key is one undo step). With nothing selected, pan a zoomed capture |
-| Double-click text | Reopen text editing |
+| Double-click text · `Enter` on a selected text | Reopen text editing |
 | `Delete` | Delete selected layer |
 | `Alt+D` | Duplicate selected layer (offset down-left, or away from a nearby edge); the copy becomes the selection |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
 | `Ctrl+C` | Copy PNG only |
 | `Ctrl+S` | Save PNG only |
-| `Enter` | Copy and save |
-| `P` | Pin the capture on screen and close the editor |
-| `Esc` | Return to Select; press again to close |
+| `Enter` | Copy and save (with a text layer selected: edit it) |
+| `Ctrl+P` / `P` | Keep the capture pinned on screen and close the editor |
+| `Esc` / `Super+W` | Dismiss the annotator; keep an originating pin in place with its edits and undo history |
 | Right-click | Return to Select; cancel active drawing |
 
-### Pinned captures
+### Capture previews and pins
 
-`P` renders the current capture, writes it to a `pin-<pid>-<n>-<random>.png` under
-the runtime snapshot directory, and launches the same `omasnap` executable in
-detached pin mode. Active pins stack from the bottom-right and can be dragged
-by the image background. The layer stays visible on every workspace without
-compositor window rules. It preserves the image
-aspect ratio, with a maximum width of one third of the screen and a maximum height of one
-half.
+Normal captures show a preview that fades after 10 seconds of idle time, replacing
+the completion notification. Hovering the stack, dragging, and in-progress
+actions pause the countdown; it resumes when the preview is idle again. Clicking,
+scrolling, copying, or editing does not pin the preview. Only the pin button or
+`Ctrl+P` on a focused preview keeps it until closed. Kept shots show a highlighted
+pin icon even when the other controls are hidden. Unpinning starts a fresh
+10-second countdown.
+New captures always go in front of the existing stack, including kept shots.
+Opening Edit leaves the preview's expiry policy unchanged; pin it first to keep
+the preview available throughout annotation.
+
+In the editor, `Ctrl+P` or `P` renders a capture that stays pinned. It writes a
+`pin-<pid>-<n>-<random>.png` under the runtime snapshot directory, and launches
+the same `omasnap` executable in
+detached pin mode. Sway floats each window and makes it sticky, so it shows on
+every workspace.
+Idle pins overlap in a compact deck at the focused monitor's bottom-right
+corner, newest in front. The front card stays straight; the cards behind it
+alternate the same growing lean as the recents shelf: −3°, +6°, −9°, +12°.
+Omasnap paints the rounded frames with the images so their edges tilt together,
+with transparent corners that take no input.
+Hover to straighten and fan them upward into fully exposed cards, wrapping into
+further columns when needed. The front card stays anchored; moving between cards
+keeps the fan open, and leaving folds it after a short delay. Placement accounts for
+monitor origins, scaling and rotation, respecting bars on any edge (from the visible
+workspace rectangle) and leaving a 14-pixel gap inside the usable area. It reserves each new target while the
+compositor animates it. If no on-screen slot fits, automatic packing leaves the window
+where the compositor placed it.
+
+The preview is 200 logical pixels wide with the display's aspect ratio (height
+clamped to 50–400 pixels). It fills that frame with a top-anchored cover crop;
+copy, edit and drag-out still use the complete full-resolution image. Drag the
+image background, or use `Super`+left-drag, to move a pin. Dragging over the stack
+opens an insertion gap, and releasing snaps it into that gap. The fan stays open
+during a drag. Moving or closing a stacked pin closes the gap; pins dragged entirely clear of the stack
+stay freely placed and are left alone when the stack folds or opens.
+A drop partly outside the usable area returns fully inside the monitor where the
+drag started, keeping the same 14-pixel edge gap.
 
 Pinning neither touches the clipboard nor writes to the screenshot directory; it is a
-fourth output alongside copy, save, and copy-and-save. `P` closes the editor and releases
+fourth output alongside copy, save, and copy-and-save. `Ctrl+P` / `P` closes the editor and releases
 the single-instance lock immediately. Pins from separate captures accumulate as independent
 processes.
 
-Hover the pin to reveal its controls:
+Hover the pin to reveal its controls and use its keyboard shortcuts; the cursor
+becomes a pointing hand over each button. **Edit** and **Copy** sit in the center
+of the image, with text labels and no tooltips. The pin button sits beside **×**
+at the top-right; the drag handle and file-path button sit at the top-left.
+Icon buttons use compact, dark tooltips for their actions and shortcuts.
+Pins follow normal mouse focus while hovered and keep focus with the current
+app when first created.
+Closing an active or hovered pin focuses the next pin on that monitor, starting
+with the front of the remaining stack, so repeated `X` presses dismiss them
+without needing another mouse movement. Opening a pin for annotation keeps
+the pin in place and gives focus to the editor. One `Esc` dismisses the editor
+and updates that same pin, including any text being typed. Reopening it restores
+the editable layers and undo history. `P` / `Ctrl+P` in that editor returns to
+the existing pin too.
+While the overlay is open, a compositor close aimed at a pin (such as Sway's kill
+binding) dismisses the overlay as `Esc` would, leaving the pins in place.
+Automatic expiry compacts the stack without transferring keyboard focus.
 
 | Input on a pin | Action |
 |---|---|
-| Edit button | Reopen the full-resolution PNG in Omasnap and replace the pin |
-| Link button | Copy the source file path |
-| Copy button, `Ctrl+C` | Copy the full-resolution PNG |
-| Double-wide top-left drag handle | Drag the PNG into a file-capable drop target |
-| Wheel | Resize within the screen caps, preserving aspect ratio |
-| Close button, `Esc`, middle-click | Close |
+| Pin button, `Ctrl+P` while focused | Keep on screen; press again to unpin and restart the countdown |
+| Edit button, `A` / `E` while hovered | Annotate the capture while keeping the same pin |
+| Link button, `L` / `F` while hovered | Save the capture if needed and copy its file path |
+| Copy button, `C` while hovered, `Ctrl+C` | Copy the full-resolution PNG |
+| Top-left six-dot drag handle | Drag the PNG into a file-capable drop target |
+| Wheel | Keep the fixed preview size |
+| Close button, `X` / `Super+W` while focused, `Esc`, middle-click | Close and focus the next pin |
 
 Image and path copying use `wl-copy` rather than `QClipboard`, so clipboard data remains
-available after the pin is closed. No font-based symbol set or compositor-specific window
-rule is required; the controls use the same vector icon renderer as the annotation toolbar.
+available after the pin is closed. Copying a temporary capture's path first saves
+its PNG in the configured screenshots directory. Repeated copies reuse that file;
+closing or expiring the preview leaves the saved copy available. A pin opened from
+an existing file copies that file's original path.
+
+Sway placement uses `[con_id=N]` commands through `swaymsg` and
+requires no user window rules. The controls use the annotation toolbar’s vector
+icons, including Lucide’s pin drawn directly by the renderer.
+
+Canvas boundary changes affect only preview and export clipping. The complete vector
+geometry stays in the operation log, so switching back to Grow restores every off-canvas
+part of a layer.
 
 Creation tools return to Select after one placement without selecting the new layer. In
-Select mode, arrows and lines show only their two endpoint handles; other layers show a
-selection boundary. The eight blue/white handles outside the image recrop its corners or
-edges.
+Select mode, lines and straight arrows show two endpoint handles; curved and double arrows
+add an on-curve handle for bending the arc (hold `Shift` to keep that bend centered). Other
+layers show a selection boundary. The eight blue/white handles outside the image recrop
+its corners or edges. After the canvas grows, those crop handles remain on the original
+source frame.
 
 ## Development and verification
 
@@ -311,12 +543,23 @@ edges.
 make check
 ```
 
-The smoke executable exercises region/window/fullscreen startup modes, Sway output/tree
-parsing, fractional and transformed-output crop mapping, capture selection,
+The smoke executable exercises smart/region/window/fullscreen startup modes, capture selection,
 working-document persistence (source plus op-log JSON), annotation tools, undo/redo
 replay, vector movement and scaling, text editing, OCR, native-DPI output,
-endpoint-only line selection, external crop handles, and the native-pixel
+endpoint-only line selection, annotation-driven canvas growth and clipping policies,
+external crop handles,
+and the native-pixel
 measurement readout on a scaled monitor.
+
+For live launch profiling, the binary has an opt-in millisecond trace from `main()`
+through the first completed overlay paint:
+
+```bash
+OMASNAP_PROFILE_STARTUP=1 ./build/omasnap 2>startup.log
+```
+
+The trace also breaks native capture into Wayland registry, buffer allocation, frame wait,
+and pixel handoff stages. It is completely silent by default.
 
 `.github/workflows/build-linux.yml` runs the same `make check` build, interaction smoke,
 and available static-analysis checks in an Arch Linux container, stages the CMake installation, and uploads a versioned Linux
@@ -341,7 +584,6 @@ This standalone repository was extracted with `git filter-repo` from the origina
 system-customization repository. The former `omasnap/` directory was promoted to
 the repository root while retaining its relevant commit history.
 
-The bundled Neucha font is distributed under the SIL Open Font License; its license is in
-`assets/OFL.txt` and is installed with the application.
-
-Omasnap source code is distributed under the MIT License in `LICENSE`.
+The bundled Neucha, JetBrains Mono, and Inter Display fonts are distributed
+under the SIL Open Font License. Their provenance and hashes are recorded in
+`assets/FONTS.md`; their licenses are installed with the application.
