@@ -33,25 +33,50 @@ image as you draw.** Add a rectangle, change your mind, delete it — the
 source pixels underneath were never touched.
 
 Completing a fresh capture copies it and shows a timed preview by default. The
-preview fades after 10 seconds of idle time; its pin button or Ctrl+P keeps it.
-`--editor overlay` or `--editor window` opens annotation before output; a pin's
-Edit button also opens the editor on demand. During editing, output happens on **Copy**,
-**Save**, or both together (`CaptureEditor::finish()`), plus pinning a
-snapshot or returning edits to an existing pin. Each render runs off the UI thread (see
+preview fades after 7 seconds of idle time; its pin button, Ctrl+P, or moving the
+preview keeps it, including a drag that only reorders the stack.
+`--editor overlay` or `--editor window` opens annotation before output; `E` or
+`A` in the capture picker toggles the same behavior for that capture, including
+scrolling captures. A pin's Edit button also opens the editor on demand.
+During editing, output happens on **Copy**, **Save**, **Save As**, or both Copy
+and Save together (`CaptureEditor::finish()` / `saveAsToPath()`), plus pinning a snapshot or
+returning edits to an existing pin. Each render runs off the UI thread (see
 [threading.md](threading.md)), and writes the result. Until one of those
-happens, everything remains a log entry you can undo.
+happens, everything remains a log entry you can undo. Successful Save, Save As,
+and Copy + Save actions close the editor and return a fresh timed preview to the
+stack. Its private metadata points to the saved PNG for Reveal and Copy path;
+expiry removes only the runtime copy. An originating preview or pin closes once
+its replacement is ready. Cancelling the chooser or failing to save keeps editing open.
+
+Every completed capture also keeps a private source, operation log, and rendered
+thumbnail in the five-entry recents shelf, including untouched timed previews,
+quick output, explicit pins, and editors dismissed with `Esc`. Preview expiry
+only removes the runtime preview. The next overlay can reopen its recent card
+directly for annotation. A capture identity survives preview editing and editor
+handoffs so completing it again updates one entry and retains editable layers.
+Shelf writes, thumbnail rendering, and pruning continue on the completion worker
+after the preview appears and the overlay closes. Immediately reopening a preview
+waits for its pending document on a worker so the original layers remain editable.
 
 Opening a pin for annotation leaves its compositor window in place. A private
 copy retains the pristine source and operation log; `Esc` commits any text draft,
 dismisses the annotator, and updates the pin's rendered preview. Reopening reads
-the source and log, so undo still works. Copying or dragging the pin shares only
-the rendered preview. The original user file is never overwritten, and the last
-pin/editor owner removes the private source, log, and preview together.
+the source and log, so undo still works. Copying, dragging, or revealing the pin
+shares only the rendered preview. The pin handoff never overwrites the original user file,
+and the last pin/editor owner removes the private source, log, and preview together.
 
 Scrolling captures retain the monitor's scale when they become editable
 documents. Their native pixels stay intact; only the logical presentation size
 changes. Loaded documents also retain their exact pixel dimensions on export,
 even when the logical size was rounded for a scaled display.
+Flattened pins and previews record the logical size of the entire rendered
+image, including its backdrop and expanded canvas, so reopening them preserves
+their proportions. The editable source's log still uses its original coordinates.
+Flattened PNG exports carry their complete logical dimensions in an
+`Omasnap logical size` text field, including crops, mats, and canvas growth.
+File and clipboard imports read it without needing the private sidecar;
+an editable document's operation log takes precedence. Untagged images retain
+their pixel dimensions: print DPI does not establish screenshot display scale.
 
 ## The two exceptions, and why they're still safe
 
@@ -59,9 +84,10 @@ Two operations *do* need to touch real pixels before export, and both are
 still fully undoable because of how they're kept in the log:
 
 - **Cut** (`Operation::Type::Cut`) removes a band of the image and shifts
-  everything after it. The working image (`capture_.source`) after a cut is
-  `composeCuts(pristineSource_, cuts_)` — recomputed from the untouched
-  original plus the list of cut ops every time the list changes
+  everything after it, or **inserts** a transparent band (`cut.insert`) and
+  shifts everything after the seam out. The working image (`capture_.source`)
+  after a cut is `composeCuts(pristineSource_, cuts_)` — recomputed from the
+  untouched original plus the list of cut ops every time the list changes
   (`CaptureEditor::refreshComposedCapture()`). Undo a cut and the composed
   image is rebuilt without it; `pristineSource_` was never modified.
 - **Redaction** exists to permanently destroy sensitive content, so it is

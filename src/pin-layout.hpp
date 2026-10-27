@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QPair>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <optional>
@@ -17,6 +18,10 @@
 /// so a tall pivot or an ultrawide still yields a pin rather than a line;
 /// 16:9 when the display cannot be asked.
 [[nodiscard]] QSize pinFrameSize(const QSize &screenSize);
+
+/// Bounded pixels for displaying any pin frame, including tall scroll captures.
+/// Call on a worker; never use this image for output or editing.
+[[nodiscard]] QImage pinDisplayImage(const QImage &image);
 
 /// Keep a freely dropped pin inside a monitor's work area with the stack's
 /// edge inset. If it is smaller than the pin, keep the top-left controls visible.
@@ -100,7 +105,7 @@ pinInsertionPlan(QVector<QPair<QString, QRect>> column,
                                        const QJsonArray &workspaces);
 
 /// Control geometry shared by painting and hit testing: labeled actions in
-/// the center, drag/path at top-left, and pin/close at top-right.
+/// the center, drag/path/folder at top-left, and pin/close at top-right.
 [[nodiscard]] QRectF pinControlRect(const QSize &frame, int index);
 
 /** Hover tips for icon controls; labeled actions and unknown controls are empty. */

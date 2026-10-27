@@ -13,13 +13,27 @@ From `CMakeLists.txt`, this is the entire list:
 | **Qt6** (Concurrent, Core, Gui, Test, Widgets) 6.8+ | Everything: windowing, painting, the editor UI, the worker-pool threading model ([threading.md](threading.md)), the test harness |
 | **LayerShellQt** | Layer-shell surfaces (the capture overlay and editor) |
 | **wayland-client** (pkg-config) | Raw protocol client code (`ext-image-copy-capture`, `zwlr_virtual_pointer_v1`) that LayerShellQt/QtWayland don't expose |
+| **libdeflate** (pkg-config) | Fast lossless PNG compression and CRCs for 8-bit screenshots; avoids seconds of Qt/zlib encoding before a 6K preview can appear |
 | **wayland-scanner** + protocol XML | Generates the C bindings for the above at build time; not a runtime dependency |
 
 That's it. No JSON library (Qt's `QJsonDocument` handles `swaymsg -r`
-output), no image codec beyond what Qt's own PNG support provides, no HTTP,
+output), no HTTP,
 no logging framework, no CLI-parsing library beyond `QCommandLineParser`,
-no config-file parser beyond `QSettings` (used for the one optional INI
-file — see below).
+no general config-file parser beyond `QSettings` (used for the one optional INI
+file — see below). The theme adapter reads a bounded scalar subset of Omarchy's
+TOML color files with Qt; it adds no parser library.
+
+`src/png.cpp` writes ordinary 8-bit RGB/RGBA PNGs using libdeflate at level 1.
+On a captured 6K desktop, Qt's default PNG encoding took about 3 seconds;
+even its fastest compressed setting took about 700 ms. Libdeflate brought
+compression to about 150 ms with identical decoded pixels and similar file
+size. It earns its dependency by removing that capture-to-preview delay.
+The fast encoder also writes Omasnap's small logical-size PNG text field, so
+standalone captures reopen at their original display size without resampling.
+Qt still reads every image and writes images with profiles/other text/offset metadata,
+high-bit-depth formats, and captures exceeding the encoder's 128 MiB filtered
+buffer budget. Those use Qt's streaming writer at zlib level 1. PNG DPI metadata
+is preserved on both paths. No quality or compression setting is exposed.
 
 ## Runtime: external processes, not libraries
 
@@ -35,14 +49,16 @@ no user-visible benefit.
 |---|---|---|
 | `swaymsg` | Output/window discovery (`get_outputs`, `get_tree`), pin rules and placement, windowed-editor floating | Yes — see [platform-scope.md](platform-scope.md) |
 | `wl-copy` / `wl-paste` | Writing PNG/text to the Wayland clipboard, and verifying the write | Yes |
+| `xdg-open` | Opening a screenshot's containing folder in the default file browser | For Show in folder |
+| `xdg-mime` / `busctl` | Resolve the default folder application and ask it to select the screenshot with `FileManager1.ShowItems` | Optional — falls back to `xdg-open` |
 | `tesseract` | OCR text recognition | Only if OCR is used; missing tesseract fails just that action |
 | `notify-send` (libnotify) | Capture-finished notifications with an image hint | No — falls back silently if absent (checked with `command -v` semantics via failed `QProcess::startDetached`) |
 
-Each of these is invoked through the small `runProcess`/
-`QProcess::startDetached` helpers in `src/capture.cpp`, or the bounded
-`swaymsg` runner in `src/sway-ipc.cpp`, from a background
-worker (see [threading.md](threading.md)) — never inline on the UI thread,
-and always with a timeout.
+These run through the small `QProcess` helpers in `src/capture.cpp` and
+`src/pin.cpp`, or the bounded `swaymsg` runner in `src/sway-ipc.cpp`, from a
+background worker (see [threading.md](threading.md)). Calls that wait for a
+result have a timeout; long-lived applications launch detached. None run
+inline on the UI thread.
 
 ## Not a dependency: external Qt platform themes
 
@@ -52,14 +68,31 @@ its own process in `main()` before `QApplication` is constructed: honouring
 the session value loads the `qgtk3` plugin,
 which initialises GTK3, GLib/GIO and dconf inside the process — measured at
 81–112 ms of `QApplication` construction and ~20–24 MiB of RSS on an Omarchy
-laptop — for an overlay that is hand-painted, opens no dialogs and reads no
-palette. The only relevant values the external theme supplied were its
-general and fixed fonts; their chrome and application-default replacements
+laptop — for hand-painted chrome and Qt's built-in file chooser. The only
+relevant values the external theme supplied were its general and fixed fonts;
+their chrome and application-default replacements
 are pinned by `chromeFont()`, `chromeMonoFont()`, and `chromeDefaultFont()`
 (`src/overlay-chrome.cpp`) instead. Do not make startup or chrome rendering
 depend on an external desktop theme, `QStyle`- or palette-derived chrome, or
 icon-theme lookup: each is a startup cost with nothing in this codebase to
 spend it on.
+
+Chrome colors do follow Omarchy. `src/chrome-theme.cpp` reads `colors.toml` and
+the optional `shell.toml` from `~/.local/state/omarchy/current/theme` on a worker.
+It resolves palette references, control fills, tooltip colors, and solid or
+gradient borders into explicit paint values. Missing or malformed data has
+readable defaults. A filesystem watcher reloads the palette after file or
+directory replacement and repaints open windows. This does not use Qt's desktop
+palette, alter annotation/export colors, or change the pinned fonts.
+
+## Save As dialog
+
+Save As uses the existing Qt Widgets file chooser asynchronously, with pinned
+chrome fonts and the active Omarchy theme, including live theme changes.
+The overlay alone receives its layer-shell
+role through `LayerShellQt::Window::get`; the inherited global shell override
+is cleared so the chooser and overwrite prompts use ordinary xdg-shell windows.
+No native platform-theme plugin or new dependency is needed.
 
 ## The one config file
 

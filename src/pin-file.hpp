@@ -4,6 +4,7 @@
 #include <QString>
 #include <memory>
 
+struct OperationLog;
 /** Tracks a pinned snapshot while its window is open. */
 class PinSnapshotFile {
 public:
@@ -16,8 +17,14 @@ public:
   [[nodiscard]] bool isLocked() const;
   [[nodiscard]] QString path() const { return path_; }
   [[nodiscard]] QString previewPath() const { return path_ + QStringLiteral(".preview.png"); }
+  [[nodiscard]] static QString thumbnailPath(const QString &path) {
+    return path + QStringLiteral(".thumb.png");
+  }
   [[nodiscard]] static bool isOwnedPath(const QString &path);
   void preserveForEditor();
+  /** Retires the originating preview after its saved replacement is ready.
+   *  Call on the output worker, before publishing completion. */
+  void finishSavedPreview(const OperationLog &log, const QString &savedPath);
 
 private:
   QString path_;

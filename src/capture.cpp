@@ -3,6 +3,9 @@
 #include <QTextOption>
 #include "capture.hpp"
 #include "pin-file.hpp"
+#include "pin-layout.hpp"
+#include "png.hpp"
+#include "recent-snaps.hpp"
 #include "stroke-smoothing.hpp"
 #include "output-config.hpp"
 #include "startup-timing.hpp"
@@ -15,11 +18,14 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QHash>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLinearGradient>
+#include <QLocale>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPointF>
@@ -28,9 +34,10 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
-
+#include <QUuid>
 #include <algorithm>
 #include <array>
+#include <utility>
 #include <cerrno>
 #include <cmath>
 #include <fcntl.h>
@@ -39,7 +46,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-constexpr qreal kBackdropMargin = 64.0;
+/// Mat a Framed canvas keeps beyond a layer that outgrew the normal frame.
+constexpr qreal kFramedLayerMargin = 15.0;
 
 bool loadCaptureFonts() {
   static const std::array<int, 3> fontIds{
@@ -143,17 +151,24 @@ QRectF annotationTextBounds(const Annotation &annotation,
   return glyphs.adjusted(-pad, -pad, pad, bottom - metrics.descent());
 }
 
-QRectF captureCanvasRect(const QSizeF &sourceFrameSize,
-                         const QVector<Annotation> &annotations,
-                         CanvasBoundaryMode boundaryMode) {
-  const QRectF sourceFrame(QPointF(), sourceFrameSize);
-  if (sourceFrame.isEmpty())
-    return {};
-  if (boundaryMode == CanvasBoundaryMode::Image)
-    return sourceFrame;
+qreal annotationPenWidth(const Annotation &annotation) {
+  switch (annotation.kind) {
+  case Annotation::Kind::Highlighter:
+    return std::max<qreal>(6.0, annotation.size * 3.0);
+  case Annotation::Kind::Freehand:
+  case Annotation::Kind::Line:
+    return std::max<qreal>(2.0, annotation.size);
+  case Annotation::Kind::Rectangle:
+  case Annotation::Kind::Ellipse:
+    return annotation.filled ? 0.0 : std::max<qreal>(2.0, annotation.size);
+  case Annotation::Kind::Spotlight:
+    return std::max<qreal>(1.0, annotation.size / 2.0);
+  default:
+    return 0.0;
+  }
+}
 
-  QRectF canvas = sourceFrame;
-
+QRectF annotationPaintedBounds(const Annotation &annotation) {
   const auto pointBounds = [](const QVector<QPointF> &points) {
     if (points.isEmpty())
       return QRectF();
@@ -169,56 +184,53 @@ QRectF captureCanvasRect(const QSizeF &sourceFrameSize,
     }
     return QRectF(QPointF(left, top), QPointF(right, bottom));
   };
-  const auto paintedBounds = [&](const Annotation &annotation) {
-    // Redaction only replaces pixels inside the source frame. Its geometry
-    // can extend past that frame, but there are no painted pixels there for a
-    // larger canvas to reveal.
-    if (annotation.kind == Annotation::Kind::Redaction)
+  // Redaction only replaces pixels inside the source frame. Its geometry
+  // can extend past that frame, but there are no painted pixels there for a
+  // larger canvas to reveal.
+  if (annotation.kind == Annotation::Kind::Redaction)
+    return QRectF();
+  if (annotation.kind == Annotation::Kind::Text)
+    return annotationTextBounds(annotation).adjusted(-1, -1, 1, 1);
+  if (annotation.kind == Annotation::Kind::Marker) {
+    const qreal diameter = std::max<qreal>(24.0, annotation.size * 6.0);
+    const qreal antialias =
+        std::max<qreal>(1.0, annotation.size * 0.35) / 2.0 + 1.0;
+    return QRectF(annotation.start.x() - diameter / 2.0,
+                  annotation.start.y() - diameter / 2.0, diameter, diameter)
+        .adjusted(-antialias, -antialias, antialias, antialias);
+  }
+  if (annotation.kind == Annotation::Kind::Freehand ||
+      annotation.kind == Annotation::Kind::Highlighter) {
+    if (annotation.points.size() < 2)
       return QRectF();
-    if (annotation.kind == Annotation::Kind::Text)
-      return annotationTextBounds(annotation).adjusted(-1, -1, 1, 1);
-    if (annotation.kind == Annotation::Kind::Marker) {
-      const qreal diameter = std::max<qreal>(24.0, annotation.size * 6.0);
-      const qreal antialias =
-          std::max<qreal>(1.0, annotation.size * 0.35) / 2.0 + 1.0;
-      return QRectF(annotation.start.x() - diameter / 2.0,
-                    annotation.start.y() - diameter / 2.0, diameter, diameter)
-          .adjusted(-antialias, -antialias, antialias, antialias);
-    }
-    if (annotation.kind == Annotation::Kind::Freehand ||
-        annotation.kind == Annotation::Kind::Highlighter) {
-      if (annotation.points.size() < 2)
-        return QRectF();
-      const qreal width =
-          annotation.kind == Annotation::Kind::Highlighter
-              ? std::max<qreal>(6.0, annotation.size * 3.0)
-              : std::max<qreal>(2.0, annotation.size);
-      const qreal extent = width / 2.0 + 1.0;
-      return pointBounds(annotation.points)
-          .adjusted(-extent, -extent, extent, extent);
-    }
+    const qreal extent = annotationPenWidth(annotation) / 2.0 + 1.0;
+    return pointBounds(annotation.points)
+        .adjusted(-extent, -extent, extent, extent);
+  }
 
-    QRectF bounds(annotation.start, annotation.end);
-    bounds = bounds.normalized();
-    if (annotation.kind == Annotation::Kind::Arrow) {
-      const QRectF visual = arrowVisualBounds(annotation);
-      return visual.isEmpty() ? QRectF() : visual.adjusted(-1, -1, 1, 1);
-    }
-    qreal extent = 1.0;
-    if (annotation.kind == Annotation::Kind::Line ||
-        annotation.kind == Annotation::Kind::Arrow ||
-        ((annotation.kind == Annotation::Kind::Rectangle ||
-          annotation.kind == Annotation::Kind::Ellipse) &&
-         !annotation.filled)) {
-      extent += std::max<qreal>(2.0, annotation.size) / 2.0;
-    } else if (annotation.kind == Annotation::Kind::Spotlight) {
-      extent += std::max<qreal>(1.0, annotation.size / 2.0) / 2.0;
-    }
-    return bounds.adjusted(-extent, -extent, extent, extent);
-  };
+  QRectF bounds(annotation.start, annotation.end);
+  bounds = bounds.normalized();
+  if (annotation.kind == Annotation::Kind::Arrow) {
+    const QRectF visual = arrowVisualBounds(annotation);
+    return visual.isEmpty() ? QRectF() : visual.adjusted(-1, -1, 1, 1);
+  }
+  const qreal extent = annotationPenWidth(annotation) / 2.0 + 1.0;
+  return bounds.adjusted(-extent, -extent, extent, extent);
+}
+
+QRectF captureCanvasRect(const QSizeF &sourceFrameSize,
+                         const QVector<Annotation> &annotations,
+                         CanvasBoundaryMode boundaryMode) {
+  const QRectF sourceFrame(QPointF(), sourceFrameSize);
+  if (sourceFrame.isEmpty())
+    return {};
+  if (boundaryMode == CanvasBoundaryMode::Image)
+    return sourceFrame;
+
+  QRectF canvas = sourceFrame;
 
   for (const Annotation &annotation : annotations) {
-    const QRectF bounds = paintedBounds(annotation);
+    const QRectF bounds = annotationPaintedBounds(annotation);
     if (!bounds.isNull())
       canvas = canvas.united(bounds);
   }
@@ -239,16 +251,20 @@ QRectF captureCanvasRect(const QSizeF &sourceFrameSize,
   }
 
   // Framed mode begins with the same frame as a regular backdrop, then
-  // extends only a side whose annotation exceeds it. Source and layer
-  // coordinates stay fixed.
+  // extends only a side whose annotation exceeds it, keeping a little mat
+  // beyond that layer so it never ends flush against the edge. Source and
+  // layer coordinates stay fixed.
   const QRectF backdropFrame = sourceFrame.adjusted(
       -kBackdropMargin, -kBackdropMargin, kBackdropMargin, kBackdropMargin);
-  const qreal left = std::floor(std::min(canvas.left(), backdropFrame.left()));
-  const qreal top = std::floor(std::min(canvas.top(), backdropFrame.top()));
+  const QRectF layers =
+      canvas.adjusted(-kFramedLayerMargin, -kFramedLayerMargin,
+                      kFramedLayerMargin, kFramedLayerMargin);
+  const qreal left = std::floor(std::min(layers.left(), backdropFrame.left()));
+  const qreal top = std::floor(std::min(layers.top(), backdropFrame.top()));
   const qreal right =
-      std::ceil(std::max(canvas.right(), backdropFrame.right()));
+      std::ceil(std::max(layers.right(), backdropFrame.right()));
   const qreal bottom =
-      std::ceil(std::max(canvas.bottom(), backdropFrame.bottom()));
+      std::ceil(std::max(layers.bottom(), backdropFrame.bottom()));
   return {left, top, right - left, bottom - top};
 }
 
@@ -304,9 +320,12 @@ struct ProcessResult {
 };
 
 ProcessResult runProcess(const QString &program, const QStringList &arguments,
-                         const QByteArray &input = {}, int timeoutMs = 10000) {
+                         const QByteArray &input = {}, int timeoutMs = 10000,
+                         const QProcessEnvironment &environment = {}) {
   QProcess process;
   process.setProcessChannelMode(QProcess::SeparateChannels);
+  if (!environment.isEmpty())
+    process.setProcessEnvironment(environment);
   process.start(program, arguments);
   if (!process.waitForStarted(2000))
     return {{}, process.errorString().toUtf8(), -1, false};
@@ -354,7 +373,7 @@ QString runtimePath(const QString &name) {
   return runtime.isEmpty() ? QString() : QDir(runtime).filePath(name);
 }
 
-QString screenshotTargetPath(QString &error, const QString &appSlug) {
+QString suggestedScreenshotPathImpl(const QString &appSlug) {
   // Precedence: OMASNAP_SCREENSHOT_DIR, then [output] directory in the
   // config, then ~/Pictures/Screenshots. The filename pattern comes from
   // [output] filename; its default keeps the date first so the folder always
@@ -367,14 +386,21 @@ QString screenshotTargetPath(QString &error, const QString &appSlug) {
     root =
         QDir(QStandardPaths::writableLocation(QStandardPaths::PicturesLocation))
             .filePath(QStringLiteral("Screenshots"));
+  return QDir(root).filePath(formatScreenshotFilename(
+      config.filename, QDateTime::currentDateTime(), appSlug));
+}
+
+QString screenshotTargetPath(QString &error, const QString &appSlug) {
+  const QString suggested = suggestedScreenshotPathImpl(appSlug);
+  const QFileInfo file(suggested);
+  const QString root = file.absolutePath();
   if (!QDir().mkpath(root)) {
     error =
         QStringLiteral("Could not create screenshot directory: %1").arg(root);
     return {};
   }
 
-  const QString fileName = formatScreenshotFilename(
-      config.filename, QDateTime::currentDateTime(), appSlug);
+  const QString fileName = file.fileName();
   const QString stem = fileName.chopped(4);
   QString path = QDir(root).filePath(fileName);
   for (int suffix = 2; QFile::exists(path); ++suffix)
@@ -1040,6 +1066,13 @@ void applyRedactions(QImage &image, const QVector<Annotation> &annotations,
   }
 }
 
+QSizeF captureOutputScale(const CaptureData &capture) {
+  // The measured source is authoritative for live captures too: Sway reports
+  // fractional scales such as 1.2000000476837158 that do not match the frame.
+  return {capture.source.width() / static_cast<qreal>(capture.previewSize.width()),
+          capture.source.height() / static_cast<qreal>(capture.previewSize.height())};
+}
+
 QRect pixelSelection(const CaptureData &capture, const QRectF &selection) {
   if (capture.source.isNull() || capture.previewSize.isEmpty())
     return {};
@@ -1107,9 +1140,62 @@ QPainterPath spotlightPath(const Annotation &annotation) {
   return path;
 }
 
+bool spotlightOpens(const Annotation &annotation, const QRectF &bounds) {
+  if (annotation.kind != Annotation::Kind::Spotlight)
+    return false;
+  const QRectF lens =
+      QRectF(annotation.start, annotation.end).normalized().intersected(bounds);
+  return lens.width() >= 1 && lens.height() >= 1;
+}
+
+namespace {
+/** Source pixels a spotlight's lens magnifies, when `sourceRect` is the
+ *  composed canvas that maps onto `targetBounds`. */
+QRectF spotlightSample(const Annotation &annotation,
+                       const QRectF &targetBounds, const QRectF &sourceRect) {
+  const QRectF lens = QRectF(annotation.start, annotation.end).normalized();
+  const qreal magnification = std::clamp(annotation.magnification, 1.0, 4.0);
+  QSizeF sampleSize(sourceRect.width() * lens.width() / targetBounds.width() /
+                        magnification,
+                    sourceRect.height() * lens.height() /
+                        targetBounds.height() / magnification);
+  sampleSize.setWidth(std::min(sampleSize.width(), sourceRect.width()));
+  sampleSize.setHeight(std::min(sampleSize.height(), sourceRect.height()));
+  const QPointF normalizedCenter(
+      (lens.center().x() - targetBounds.left()) / targetBounds.width(),
+      (lens.center().y() - targetBounds.top()) / targetBounds.height());
+  const QPointF sampleCenter(
+      sourceRect.left() + normalizedCenter.x() * sourceRect.width(),
+      sourceRect.top() + normalizedCenter.y() * sourceRect.height());
+  QRectF sample(sampleCenter.x() - sampleSize.width() / 2.0,
+                sampleCenter.y() - sampleSize.height() / 2.0,
+                sampleSize.width(), sampleSize.height());
+  sample.moveLeft(std::clamp(sample.left(), sourceRect.left(),
+                             sourceRect.right() - sample.width()));
+  sample.moveTop(std::clamp(sample.top(), sourceRect.top(),
+                            sourceRect.bottom() - sample.height()));
+  return sample;
+}
+} // namespace
+
+QRectF spotlightSampleBounds(const QVector<Annotation> &annotations,
+                             const QRectF &targetBounds,
+                             const QRectF &sourceRect) {
+  QRectF bounds;
+  if (targetBounds.isEmpty() || sourceRect.isEmpty())
+    return bounds;
+  for (const Annotation &annotation : annotations) {
+    if (spotlightOpens(annotation, targetBounds))
+      bounds = bounds.united(
+          spotlightSample(annotation, targetBounds, sourceRect));
+  }
+  return bounds;
+}
+
 void paintSpotlights(QPainter &painter, const QImage &source,
                      const QRectF &targetBounds, const QRectF &sourceRect,
-                     const QVector<Annotation> &annotations) {
+                     const QVector<Annotation> &annotations,
+                     const QPoint &sourceOrigin) {
   if (source.isNull() || targetBounds.isEmpty() || sourceRect.isEmpty())
     return;
 
@@ -1117,12 +1203,7 @@ void paintSpotlights(QPainter &painter, const QImage &source,
   QPainterPath dimmed;
   dimmed.addRect(targetBounds);
   for (const Annotation &annotation : annotations) {
-    if (annotation.kind != Annotation::Kind::Spotlight)
-      continue;
-    const QRectF lens =
-        QRectF(annotation.start, annotation.end).normalized().intersected(
-            targetBounds);
-    if (lens.width() < 1 || lens.height() < 1)
+    if (!spotlightOpens(annotation, targetBounds))
       continue;
     QPainterPath opening = spotlightPath(annotation);
     QPainterPath targetClip;
@@ -1139,26 +1220,10 @@ void paintSpotlights(QPainter &painter, const QImage &source,
   painter.fillPath(dimmed, QColor(0, 0, 0, 154));
   for (const Annotation *annotation : spotlights) {
     const QRectF lens = QRectF(annotation->start, annotation->end).normalized();
-    const qreal magnification = std::clamp(annotation->magnification, 1.0, 4.0);
-    QSizeF sampleSize(sourceRect.width() * lens.width() / targetBounds.width() /
-                          magnification,
-                      sourceRect.height() * lens.height() /
-                          targetBounds.height() / magnification);
-    sampleSize.setWidth(std::min(sampleSize.width(), sourceRect.width()));
-    sampleSize.setHeight(std::min(sampleSize.height(), sourceRect.height()));
-    const QPointF normalizedCenter(
-        (lens.center().x() - targetBounds.left()) / targetBounds.width(),
-        (lens.center().y() - targetBounds.top()) / targetBounds.height());
-    const QPointF sampleCenter(
-        sourceRect.left() + normalizedCenter.x() * sourceRect.width(),
-        sourceRect.top() + normalizedCenter.y() * sourceRect.height());
-    QRectF sample(sampleCenter.x() - sampleSize.width() / 2.0,
-                  sampleCenter.y() - sampleSize.height() / 2.0,
-                  sampleSize.width(), sampleSize.height());
-    sample.moveLeft(std::clamp(sample.left(), sourceRect.left(),
-                               sourceRect.right() - sample.width()));
-    sample.moveTop(std::clamp(sample.top(), sourceRect.top(),
-                              sourceRect.bottom() - sample.height()));
+    // `source` may hold only the part of the canvas the lenses read; a whole
+    // pixel offset moves the sample into it without disturbing its phase.
+    const QRectF sample = spotlightSample(*annotation, targetBounds, sourceRect)
+                              .translated(-QPointF(sourceOrigin));
 
     const QPainterPath lensClip = spotlightPath(*annotation);
     painter.save();
@@ -1183,9 +1248,11 @@ void paintSpotlights(QPainter &painter, const QImage &source,
 void paintDefaultLayer(QPainter &painter, const QImage &redacted,
                        const QRectF &logicalBounds,
                        const QVector<Annotation> &annotations,
-                       qreal arrowDisplayScale) {
-  paintSpotlights(painter, redacted, logicalBounds, QRectF(redacted.rect()),
-                  annotations);
+                       qreal arrowDisplayScale, const QRectF &sourceRect,
+                       const QPoint &sourceOrigin) {
+  paintSpotlights(painter, redacted, logicalBounds,
+                  sourceRect.isNull() ? QRectF(redacted.rect()) : sourceRect,
+                  annotations, sourceOrigin);
   // What a capture is annotated *with* goes over what it is annotated *on*:
   // text, then counters, after everything else. A label buried under a
   // rectangle is a label nobody can read, and the number that points at it
@@ -1423,12 +1490,11 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
       capture.source.height() / static_cast<qreal>(capture.previewSize.height());
   // A document already has its final pixels. Its integer logical size can
   // round at fractional scales; do not resize the image to undo that rounding.
-  // The measured source is authoritative for live captures too: Sway reports
-  // fractional scales such as 1.2000000476837158 that do not match the frame.
-  const qreal scaleX = sourceScaleX;
-  const qreal scaleY = sourceScaleY;
-  const bool highDpi = (sourceScaleX > 1.0 || sourceScaleY > 1.0) &&
-                       !capture.preserveSourceResolution;
+  const QSizeF outputScale = captureOutputScale(capture);
+  const qreal scaleX = outputScale.width();
+  const qreal scaleY = outputScale.height();
+  const bool highDpi =
+      (scaleX > 1.0 || scaleY > 1.0) && !capture.preserveSourceResolution;
   const QPointF sourceOriginOffset(
       selection.left() * sourceScaleX - pixels.left(),
       selection.top() * sourceScaleY - pixels.top());
@@ -1521,6 +1587,7 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
     layerPainter.setClipRect(canvas);
     paintDefaultLayer(layerPainter, layerSource, layerBounds, annotations);
     layerPainter.end();
+    setPngLogicalSize(output, renderedCaptureLogicalSize(capture, output.size()));
     return output;
   }
 
@@ -1549,7 +1616,8 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
     if (imageShadow)
       paintCaptureImageShadow(painter, imageRect, scaleX, scaleY);
     QPainterPath clip;
-    clip.addRoundedRect(imageRect, 14 * scaleX, 14 * scaleY);
+    clip.addRoundedRect(imageRect, kCaptureImageRadius * scaleX,
+                        kCaptureImageRadius * scaleY);
     painter.save();
     painter.setClipPath(clip);
     painter.drawImage(imageRect.topLeft(), cropped);
@@ -1566,7 +1634,18 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
                     annotations);
   painter.restore();
   painter.end();
+  setPngLogicalSize(output, renderedCaptureLogicalSize(capture, output.size()));
   return output;
+}
+
+QSize renderedCaptureLogicalSize(const CaptureData &capture,
+                                 const QSize &renderedSize) {
+  if (renderedSize.isEmpty() || capture.source.isNull() ||
+      capture.previewSize.isEmpty())
+    return {};
+  const QSizeF scale = captureOutputScale(capture);
+  return QSizeF(renderedSize.width() / scale.width(),
+                renderedSize.height() / scale.height()).toSize();
 }
 
 QImage renderSelectionBase(const CaptureData &capture, const QRectF &selection,
@@ -1665,6 +1744,7 @@ bool loadClipboardImage(QImage &image, QString &error) {
 }
 
 bool copyPngFileToClipboard(const QString &path, QString &error) {
+  StartupTimingScope timing("copy PNG to clipboard");
   QFile input(path);
   if (!input.open(QIODevice::ReadOnly)) {
     error = QStringLiteral("Could not read screenshot snapshot: %1").arg(path);
@@ -1681,19 +1761,27 @@ bool copyPngFileToClipboard(const QString &path, QString &error) {
 bool copyImageToClipboard(const QImage &image, QString &error) {
   QByteArray png;
   QBuffer buffer(&png);
-  if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG")) {
+  if (!buffer.open(QIODevice::WriteOnly) || !writePng(image, buffer)) {
     error = QStringLiteral("Could not encode screenshot as PNG");
     return false;
   }
   return copyToWaylandClipboard(QStringLiteral("image/png"), png, error);
 }
 
-bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error) {
+bool quickOutput(QImage image, QuickOutputMode mode, QString &error,
+                 const QSize &logicalSize) {
   if (image.isNull() || mode == QuickOutputMode::None ||
       mode == QuickOutputMode::CopyAndPreview) {
     error = QStringLiteral("Could not prepare screenshot snapshot");
     return false;
   }
+  OperationLog log;
+  log.previewSize = logicalSize.isEmpty() ? image.size() : logicalSize;
+  log.recentId = QUuid::createUuid().toString(QUuid::Id128);
+  setPngLogicalSize(image, log.previewSize);
+  QString recentError;
+  if (!recordRecentSnap(image, log, image, recentError))
+    qWarning().noquote() << recentError;
   if (mode == QuickOutputMode::Copy) {
     if (!copyImageToClipboard(image, error))
       return false;
@@ -1715,10 +1803,11 @@ bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error) {
     if (saved.isEmpty())
       return false;
     if (mode == QuickOutputMode::Save)
-      sendCaptureNotification(QStringLiteral("Screenshot saved"), saved);
+      sendCaptureNotification(QStringLiteral("Screenshot saved"), saved,
+                              log.recentId);
     else
       sendCaptureNotification(QStringLiteral("Screenshot saved and copied"),
-                              saved);
+                              saved, log.recentId);
   } else {
     QFile::remove(path);
     sendCaptureNotification(QStringLiteral("Screenshot copied to clipboard"));
@@ -1767,6 +1856,10 @@ QString dominantAppClass(const QVector<WindowTarget> &windows,
     }
   }
   return best;
+}
+
+QString suggestedScreenshotPath(const QString &appSlug) {
+  return suggestedScreenshotPathImpl(appSlug);
 }
 
 QString moveSnapshotToScreenshots(const QString &sourcePath, QString &error,
@@ -1850,7 +1943,7 @@ QString editorHandoffPath() {
 bool saveEditorHandoff(const QImage &source, const QString &path,
                        const OperationLog &log, const QString &token,
                        QString &error) {
-  if (!saveTemporarySnapshot(source, path, error, -1) ||
+  if (!saveTemporarySnapshot(source, path, error) ||
       !saveOperationLog(operationLogPath(path), log, error))
     return false;
   QSaveFile marker(path + QStringLiteral(".handoff"));
@@ -1914,16 +2007,30 @@ QSize editorWindowSize(const QSize &preview, const QSize &available,
   return {std::max(size.width(), 640), std::max(size.height(), 420)};
 }
 
-bool savePinnedSnapshot(const QImage &image, const QString &path,
-                        const QSize &logicalSize, QString &error) {
-  if (!saveTemporarySnapshot(image, path, error))
-    return false;
+bool savePinnedSnapshot(QImage image, const QString &path,
+                        const QSize &logicalSize, QString &error,
+                        const QString &recentId, const QString &savedPath) {
+  if (savedPath.isEmpty()) {
+    setPngLogicalSize(image, logicalSize);
+    if (!saveTemporarySnapshot(image, path, error))
+      return false;
+  } else {
+    // Reuse the PNG that was just saved instead of encoding it a second time.
+    // An owned runtime copy lets expiry/drag-out leave the user's file intact.
+    if (!QFile::copy(savedPath, path)) {
+      error = QStringLiteral("Screenshot saved, but could not prepare its preview");
+      return false;
+    }
+  }
   // The snapshot holds device pixels; the sidecar records the logical size
   // the capture was presented at, the same way a shelf entry's log does, so
   // a later edit of the pin reconstructs the scale instead of opening the
   // image blown up.
   OperationLog sidecar;
   sidecar.previewSize = logicalSize;
+  sidecar.recentId = recentId;
+  if (!savedPath.isEmpty())
+    sidecar.savedPath = QFileInfo(savedPath).absoluteFilePath();
   if (!logicalSize.isEmpty() &&
       !saveOperationLog(operationLogPath(path), sidecar, error)) {
     QFile::remove(path);
@@ -1935,19 +2042,29 @@ bool savePinnedSnapshot(const QImage &image, const QString &path,
 QString launchPinnedCapture(
     const QImage &image, const QSize &logicalSize, bool copy,
     PinLifetime lifetime, QString &error,
-    const std::function<bool(const QString &, const QStringList &)> &launcher) {
+    const std::function<bool(const QString &, const QStringList &)> &launcher,
+    const QString &recentId, const QString &savedPath) {
+  StartupTimingScope timing("prepare and launch pin");
   prunePinnedSnapshots();
   const QString path = pinnedSnapshotPath(1);
   if (path.isEmpty()) {
     error = QStringLiteral("Could not create private runtime directory");
     return {};
   }
-  if (!savePinnedSnapshot(image, path, logicalSize, error))
+  if (!savePinnedSnapshot(image, path, logicalSize, error, recentId, savedPath))
     return {};
   const auto cleanup = [&] {
     QFile::remove(path);
     QFile::remove(operationLogPath(path));
+    QFile::remove(PinSnapshotFile::thumbnailPath(path));
   };
+  // The child only needs card-sized pixels to map its first frame. Its
+  // clipboard, file sharing, and editor still use the full-resolution PNG.
+  if (!saveTemporarySnapshot(pinDisplayImage(image),
+                             PinSnapshotFile::thumbnailPath(path), error)) {
+    cleanup();
+    return {};
+  }
   if (copy && !copyPngFileToClipboard(path, error)) {
     cleanup();
     return {};
@@ -1965,8 +2082,8 @@ QString launchPinnedCapture(
   return path;
 }
 
-bool saveTemporarySnapshot(const QImage &image, QString path, QString &error,
-                           int quality) {
+bool saveTemporarySnapshot(const QImage &image, QString path, QString &error) {
+  StartupTimingScope timing("encode and save PNG");
   if (image.isNull()) {
     error = QStringLiteral("Temporary snapshot is empty");
     return false;
@@ -1985,22 +2102,30 @@ bool saveTemporarySnapshot(const QImage &image, QString path, QString &error,
     return false;
   }
 
+  return savePngFile(image, path, error);
+}
+
+bool savePngFile(const QImage &image, const QString &path, QString &error) {
+  if (image.isNull() || path.isEmpty()) {
+    error = QStringLiteral("Cannot save an empty image or filename");
+    return false;
+  }
   QSaveFile file(path);
   file.setDirectWriteFallback(false);
   if (!file.open(QIODevice::WriteOnly) ||
       !file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
-    error = QStringLiteral("Could not open secure snapshot file: %1")
+    error = QStringLiteral("Could not open PNG file: %1")
                 .arg(file.errorString());
     return false;
   }
 
-  if (!image.save(&file, "PNG", quality)) {
+  if (!writePng(image, file)) {
     file.cancelWriting();
-    error = QStringLiteral("Could not save temporary snapshot: %1").arg(path);
+    error = QStringLiteral("Could not save PNG: %1").arg(path);
     return false;
   }
   if (!file.commit()) {
-    error = QStringLiteral("Could not replace temporary snapshot: %1")
+    error = QStringLiteral("Could not replace PNG: %1")
                 .arg(file.errorString());
     return false;
   }
@@ -2382,6 +2507,8 @@ QJsonObject operationToJson(const Operation &operation) {
     object.insert(QStringLiteral("sourceEnd"), operation.cut.sourceEnd);
     object.insert(QStringLiteral("logicalStart"), operation.cut.logicalStart);
     object.insert(QStringLiteral("logicalEnd"), operation.cut.logicalEnd);
+    if (operation.cut.insert)
+      object.insert(QStringLiteral("insert"), true);
     break;
   }
   return object;
@@ -2455,6 +2582,7 @@ bool operationFromJson(const QJsonObject &object, Operation &operation,
         object.value(QStringLiteral("logicalStart")).toInt();
     operation.cut.logicalEnd =
         object.value(QStringLiteral("logicalEnd")).toInt();
+    operation.cut.insert = object.value(QStringLiteral("insert")).toBool();
     return true;
   }
   error = QStringLiteral("Operation log has an unknown operation type");
@@ -2477,6 +2605,10 @@ bool saveOperationLog(const QString &path, const OperationLog &log,
   root.insert(QStringLiteral("index"), log.index);
   root.insert(QStringLiteral("nextId"), QString::number(log.nextId));
   root.insert(QStringLiteral("nextMarker"), log.nextMarker);
+  if (!log.recentId.isEmpty())
+    root.insert(QStringLiteral("recentId"), log.recentId);
+  if (!log.savedPath.isEmpty())
+    root.insert(QStringLiteral("savedPath"), log.savedPath);
   if (log.previewSize.isValid()) {
     root.insert(QStringLiteral("previewWidth"), log.previewSize.width());
     root.insert(QStringLiteral("previewHeight"), log.previewSize.height());
@@ -2523,6 +2655,8 @@ bool loadOperationLog(const QString &path, OperationLog &log, QString &error) {
   loaded.index = root.value(QStringLiteral("index")).toInt();
   loaded.nextId = root.value(QStringLiteral("nextId")).toString().toULongLong();
   loaded.nextMarker = root.value(QStringLiteral("nextMarker")).toInt(1);
+  loaded.recentId = root.value(QStringLiteral("recentId")).toString();
+  loaded.savedPath = root.value(QStringLiteral("savedPath")).toString();
   loaded.previewSize =
       QSize(root.value(QStringLiteral("previewWidth")).toInt(),
             root.value(QStringLiteral("previewHeight")).toInt());
@@ -2565,6 +2699,11 @@ QString recognizeText(const QImage &image, QString &error) {
     languages =
         qEnvironmentVariable("OMARCHY_OCR_LANGS", QStringLiteral("eng"));
   languages = languages.trimmed();
+  // Tesseract's OpenMP build starts a thread per core and spins them; on a
+  // screenshot that costs about three times the CPU and adds wall time
+  // instead of saving it. One thread reads the same text faster.
+  QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+  environment.insert(QStringLiteral("OMP_THREAD_LIMIT"), QStringLiteral("1"));
   const ProcessResult result = runProcess(
       QStringLiteral("tesseract"),
       {QStringLiteral("stdin"), QStringLiteral("stdout"),
@@ -2573,7 +2712,7 @@ QString recognizeText(const QImage &image, QString &error) {
        QStringLiteral("-l"), languages,
        QStringLiteral("--dpi"), QStringLiteral("300"),
        QStringLiteral("-c"), QStringLiteral("preserve_interword_spaces=1")},
-      payload, 30000);
+      payload, 30000, environment);
   if (!result.finished || result.exitCode != 0) {
     error = QStringLiteral("OCR failed for languages %1: %2")
                 .arg(languages, QString::fromUtf8(result.error).trimmed());
@@ -2585,14 +2724,20 @@ QString recognizeText(const QImage &image, QString &error) {
   return text;
 }
 
+bool notifySavedCaptures() {
+  return qEnvironmentVariableIntValue("OMASNAP_NOTIFY") == 1;
+}
+
 QStringList captureNotificationArguments(const QString &message,
-                                         const QString &imagePath) {
+                                         const QString &imagePath, bool toast) {
   // notify-send runs without a shell. Each value is one argv word, so paths
   // with spaces or quotes need no quoting. `--` keeps a message that starts
-  // with a dash from being read as an option.
+  // with a dash from being read as an option. A --notify toast for a saved
+  // image stays up for 7 s, as upstream's does; it has no Open or Edit button.
+  const bool saved = toast && !imagePath.isEmpty();
   QStringList arguments{QStringLiteral("--app-name"), QStringLiteral("omasnap"),
                         QStringLiteral("--expire-time"),
-                        QStringLiteral("4500")};
+                        saved ? QStringLiteral("7000") : QStringLiteral("4500")};
   if (!imagePath.isEmpty())
     arguments << QStringLiteral("--hint")
               << QStringLiteral("string:image-path:%1").arg(imagePath);
@@ -2600,25 +2745,35 @@ QStringList captureNotificationArguments(const QString &message,
   return arguments;
 }
 
-void sendCaptureNotification(const QString &message, const QString &imagePath) {
-  QProcess::startDetached(QStringLiteral("notify-send"),
-                          captureNotificationArguments(message, imagePath));
+void sendCaptureNotification(
+    const QString &message, const QString &imagePath,
+    const QString & /*recentId*/,
+    const std::function<bool(const QString &, const QStringList &)> &launcher) {
+  const QString program = QStringLiteral("notify-send");
+  const QStringList arguments = captureNotificationArguments(
+      message, imagePath, notifySavedCaptures());
+  if (!(launcher ? launcher(program, arguments)
+                 : QProcess::startDetached(program, arguments)))
+    qWarning("Could not start %s", qPrintable(program));
 }
 
-/// Presents a loaded image as the thing being edited. A log written by the
-/// editor carries the logical size its ops were laid out in; a source taken
-/// on a scaled monitor then opens at that scale rather than at 1:1.
 void describeFileCapture(CaptureData &capture, QImage image,
                          const OperationLog &log) {
   capture = CaptureData();
   capture.previewSize = image.size();
   capture.monitor.scale = 1.0;
+  QSize logicalSize = pngLogicalSize(image);
+  // Editable documents take precedence: their operations use the source
+  // canvas's coordinates, whereas a PNG tag describes its flattened pixels.
   if (log.previewSize.isValid() && !log.previewSize.isEmpty() &&
       log.previewSize.width() <= image.width() &&
       log.previewSize.height() <= image.height()) {
-    capture.previewSize = log.previewSize;
+    logicalSize = log.previewSize;
+  }
+  if (!logicalSize.isEmpty()) {
+    capture.previewSize = logicalSize;
     capture.monitor.scale =
-        image.width() / static_cast<qreal>(log.previewSize.width());
+        image.width() / static_cast<qreal>(logicalSize.width());
   }
   capture.monitor.pixelSize = image.size();
   capture.monitor.geometry = QRect(QPoint(0, 0), capture.previewSize);

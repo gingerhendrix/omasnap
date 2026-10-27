@@ -1,5 +1,6 @@
 /** @fileoverview Manual scroll capture overlay (see scroll-capture.hpp). */
 #include "scroll-capture.hpp"
+#include "chrome-theme.hpp"
 
 #include "scroll-inject.hpp"
 
@@ -13,6 +14,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -59,9 +61,6 @@ constexpr int kGripBand = 16;
 /// How long to let the compositor show a frame with the chrome hidden before
 /// grabbing the first one. Two frames at 60 Hz, with room to spare.
 constexpr int kChromeSettleMs = 60;
-const QColor kDim(0, 0, 0, 150);
-const QColor kAccent(10, 132, 255);
-const QColor kWarn(255, 159, 10);
 
 struct ModeButton {
   const char *label;
@@ -127,18 +126,23 @@ struct ScrollCapturePanel::Worker {
   /// Reads frames until the region has settled after a scroll tick (see the
   /// kMotionWaitMs block). `before` is the region as it was before the tick;
   /// null on the first cycle. Returns false only when the session is dead or
-  /// nothing could be grabbed at all; `error` describes it.
+  /// nothing could be grabbed at all, or cancellation was requested.
   [[nodiscard]] bool acquireSettledFrame(const QImage &before, QImage &settled,
-                                         QString &error) {
+                                         QString &error,
+                                         const std::atomic<bool> &stop) {
     QElapsedTimer clock;
     clock.start();
     bool moved = before.isNull();
     QImage last;
     int failures = 0;
-    while (true) {
+    while (!stop.load(std::memory_order_acquire)) {
       QImage frame;
       const bool ok = output.grab(frame, error, moved ? kSettleGrabMs
                                                        : kSettleGrabMs / 2);
+      // Cancellation joins this worker on the GUI thread. Do not keep
+      // retrying damage-driven grabs for the whole settling window.
+      if (stop.load(std::memory_order_acquire))
+        return false;
       if (!ok) {
         if (output.sessionStopped())
           return false;
@@ -176,6 +180,7 @@ struct ScrollCapturePanel::Worker {
         return true;
       }
     }
+    return false;
   }
 };
 
@@ -231,10 +236,12 @@ void ScrollCapturePanel::setStatus(const QString &status, bool warning) {
 
 void ScrollCapturePanel::postStalled() {
   // Called from the worker thread when an auto capture stops before the end.
+  const quint64 generation = captureGeneration_;
   QMetaObject::invokeMethod(
       this,
-      [this] {
-        if (phase_ != Phase::Capturing || mode_ != Mode::Auto)
+      [this, generation] {
+        if (released_ || generation != captureGeneration_ ||
+            phase_ != Phase::Capturing || mode_ != Mode::Auto)
           return;
         autoStalled_ = true;
         applyInputRegion(); // the row grew by a pill
@@ -247,10 +254,12 @@ void ScrollCapturePanel::postStatus(const QString &status, bool warning) {
   // Called from the worker thread; hop to the UI thread. A queued update can
   // arrive after Done stopped the worker, and it must not overwrite the
   // finishing/final status.
+  const quint64 generation = captureGeneration_;
   QMetaObject::invokeMethod(
       this,
-      [this, status, warning] {
-        if (phase_ == Phase::Capturing)
+      [this, status, warning, generation] {
+        if (!released_ && generation == captureGeneration_ &&
+            phase_ == Phase::Capturing)
           setStatus(status, warning);
       });
 }
@@ -296,21 +305,17 @@ void ScrollCapturePanel::updateKeyboardZone(const QPoint &point) {
 }
 
 void ScrollCapturePanel::setKeyboardGrab(bool grab) {
-  // Hyprland pins pointer focus to a layer that holds an exclusive keyboard
-  // grab, even over an input-region hole, so while the grab is held the wheel
-  // never reaches the page. Once a region exists the page has to be
-  // scrollable, so the grab goes away for that whole phase instead of being
-  // handed back and forth as the pointer crosses the region's edge: that
-  // handoff depended on knowing where the pointer was, and a Wayland client
-  // cannot ask. Restoring a region put the pointer somewhere we had never
-  // seen it move, and the grab stayed on. The pills are the controls from
-  // then on.
-  if (!layer_ || keyboardGrabbed_ == grab)
+  // Exclusive focus pins the pointer to this layer on Hyprland, including
+  // over the input-region hole. OnDemand releases that grab while keeping the
+  // overlay eligible for keyboard focus: None prevents Escape from reaching
+  // it after scrolling. Pointer events restore Exclusive over the chrome;
+  // entering the live region or leaving the surface releases it again.
+  if (released_ || !layer_ || keyboardGrabbed_ == grab)
     return;
   keyboardGrabbed_ = grab;
   layer_->setKeyboardInteractivity(
       grab ? LayerShellQt::Window::KeyboardInteractivityExclusive
-           : LayerShellQt::Window::KeyboardInteractivityNone);
+           : LayerShellQt::Window::KeyboardInteractivityOnDemand);
 }
 
 // ---- capture -----------------------------------------------------------------
@@ -330,6 +335,7 @@ void ScrollCapturePanel::startCapture(Mode mode, stitch::Axis axis) {
       QRect(QPoint(), worker->output.bufferSize()));
   worker->debugDir = qEnvironmentVariable("OMASNAP_SCROLL_DEBUG_DIR");
   worker_ = std::move(worker);
+  autoStalled_ = false;
   phase_ = Phase::Capturing;
   applyInputRegion();
   // The move puck lives inside the region, so the frame on screen right now
@@ -337,53 +343,84 @@ void ScrollCapturePanel::startCapture(Mode mode, stitch::Axis axis) {
   // capture reads the screen back, so it must not start until the screen no
   // longer has any of our chrome on the part being captured.
   repaint();
-  // Drop the exclusive keyboard grab for the whole capture. Hyprland pins
-  // pointer focus to a layer that holds an exclusive grab (even over an
-  // input-region hole), which stops the wheel reaching the page; with the grab
-  // released the pointer is never pinned, so scrolling the exposed page always
-  // works. Finish/cancel run off the on-screen buttons (mouse clicks, governed
-  // by the input region, not the keyboard).
+  // Release exclusive focus before scrolling starts, even if the mode button
+  // currently has the pointer. OnDemand lets the page receive wheel events;
+  // keyboard shortcuts remain available whenever the overlay has focus.
   setKeyboardGrab(false);
   stopRequested_ = false;
   if (mode_ == Mode::Manual) {
-    setStatus(QStringLiteral("Scroll the page · Done stitches it"));
-    // A couple of frames after the repaint above, so the compositor has
-    // presented the puck-less frame before the first grab reads it back.
-    QTimer::singleShot(kChromeSettleMs, this, [this] {
-      if (phase_ != Phase::Capturing)
-        return;
-      workerFuture_ = QtConcurrent::run([this] { captureLoop(); });
-    });
+    startManualCapture();
     return;
   }
-  // Automatic: the injection worker scrolls one acknowledged tick at a time.
+  startInjector(false);
+}
+
+void ScrollCapturePanel::startManualCapture() {
+  setStatus(QStringLiteral("Scroll the page · Done stitches it"));
+  // Allow the compositor to present the puck-less frame before the first
+  // grab, but discard this start if Back or a mode change replaces it.
+  const quint64 generation = captureGeneration_;
+  QTimer::singleShot(kChromeSettleMs, this, [this, generation] {
+    if (released_ || generation != captureGeneration_ ||
+        phase_ != Phase::Capturing || mode_ != Mode::Manual)
+      return;
+    workerFuture_ = QtConcurrent::run([this] { captureLoop(); });
+  });
+}
+
+void ScrollCapturePanel::startInjector(bool continuing) {
   injectorStop_ = std::make_shared<std::atomic<bool>>(false);
   handshake_ = std::make_shared<stitch::CaptureHandshake>();
+  const auto stop = injectorStop_;
+  const auto handshake = handshake_;
   const auto [parkX, parkY] = autoScrollParkPoint();
-  setStatus(QStringLiteral("Auto-scrolling… · keep the pointer still · "
-                           "Done stitches it"));
-  // Spawn after this frame's commit so the input-region hole and the released
-  // keyboard land before the pointer warp.
-  QTimer::singleShot(
-      kChromeSettleMs, this,
-      [this, parkX, parkY] {
-        if (phase_ != Phase::Capturing)
-          return;
-        QString spawnError;
-        if (!spawnScrollInjector(injectorStop_, handshake_, parkX, parkY,
-                                 axis_, monitor_.name, spawnError)) {
-          // Fall back to manual capture on the same region and axis.
-          qInfo().noquote()
-              << QStringLiteral("scroll: injector unavailable (%1)").arg(spawnError);
-          mode_ = Mode::Manual;
-          setStatus(QStringLiteral("Auto-scroll unavailable · scroll "
-                                   "manually · Done stitches"),
-                    true);
-          workerFuture_ = QtConcurrent::run([this] { captureLoop(); });
+  setStatus(QStringLiteral("Starting auto-scroll… · keep the pointer still"));
+  // Let the input hole and released keyboard reach the compositor first.
+  // The token also invalidates a pending timer when Back/Cancel is pressed.
+  QTimer::singleShot(kChromeSettleMs, this,
+                    [this, stop, handshake, parkX, parkY, continuing] {
+    if (released_ || phase_ != Phase::Capturing || injectorStop_ != stop ||
+        stop->load(std::memory_order_acquire))
+      return;
+    auto *watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this,
+            [this, watcher, stop, continuing] {
+      const QString error = watcher->result();
+      watcher->deleteLater();
+      // Setup owns only copied values and can outlive this capture. A stale
+      // completion must never start a loop against a replaced Worker.
+      if (released_ || phase_ != Phase::Capturing || injectorStop_ != stop ||
+          stopRequested_)
+        return;
+      if (!error.isEmpty()) {
+        if (continuing) {
+          autoStalled_ = true;
+          setStatus(QStringLiteral("Could not start auto-scroll again: %1")
+                        .arg(error), true);
           return;
         }
-        workerFuture_ = QtConcurrent::run([this] { autoCaptureLoop(); });
-      });
+        qInfo().noquote()
+            << QStringLiteral("scroll: injector unavailable (%1)").arg(error);
+        mode_ = Mode::Manual;
+        setStatus(QStringLiteral("Auto-scroll unavailable · scroll "
+                                 "manually · Done stitches"), true);
+        workerFuture_ = QtConcurrent::run([this] { captureLoop(); });
+        return;
+      }
+      setStatus(QStringLiteral("Auto-scrolling… · keep the pointer still · "
+                               "Done stitches it"));
+      workerFuture_ = QtConcurrent::run([this] { autoCaptureLoop(); });
+    });
+    watcher->setFuture(QtConcurrent::run(
+        [starter = injectorStarter_, stop, handshake, parkX, parkY,
+         axis = axis_, output = monitor_.name] {
+      QString error;
+      if (!starter(stop, handshake, parkX, parkY, axis, output, error) &&
+          error.isEmpty())
+        error = QStringLiteral("No scroll injector available");
+      return error;
+    }));
+  });
 }
 
 void ScrollCapturePanel::stopWorker() {
@@ -392,6 +429,9 @@ void ScrollCapturePanel::stopWorker() {
     injectorStop_->store(true, std::memory_order_release);
   if (workerFuture_.isRunning())
     workerFuture_.waitForFinished();
+  // Status/stall notices already queued by the old loop and its deferred
+  // manual start must not attach themselves to the next capture.
+  ++captureGeneration_;
 }
 
 void ScrollCapturePanel::captureLoop() {
@@ -521,7 +561,9 @@ void ScrollCapturePanel::autoCaptureLoop() {
       continue;
     }
     QImage cropped;
-    if (!w.acquireSettledFrame(w.lastCrop, cropped, error)) {
+    if (!w.acquireSettledFrame(w.lastCrop, cropped, error, stopRequested_)) {
+      if (stopRequested_)
+        break;
       // Never acknowledge on a failed grab: the worker holds this cycle and
       // the same stable screen is retried.
       if (w.output.sessionStopped()) {
@@ -778,22 +820,7 @@ void ScrollCapturePanel::continueCapture() {
   setKeyboardGrab(false);
   worker_->autoSession.resumeFromEnd(); // a stop looks just like an end
   worker_->lastCycle = 0; // a new handshake counts from one again
-  injectorStop_ = std::make_shared<std::atomic<bool>>(false);
-  handshake_ = std::make_shared<stitch::CaptureHandshake>();
-  const auto [parkX, parkY] = autoScrollParkPoint();
-  setStatus(QStringLiteral("Auto-scrolling… · keep the pointer still · "
-                           "Done stitches it"));
-  update();
-  QString spawnError;
-  if (!spawnScrollInjector(injectorStop_, handshake_, parkX, parkY, axis_,
-                           monitor_.name, spawnError)) {
-    autoStalled_ = true;
-    setStatus(QStringLiteral("Could not start auto-scroll again: %1")
-                  .arg(spawnError),
-              true);
-    return;
-  }
-  workerFuture_ = QtConcurrent::run([this] { autoCaptureLoop(); });
+  startInjector(true);
 }
 
 void ScrollCapturePanel::returnToModeChoice() {
@@ -801,6 +828,7 @@ void ScrollCapturePanel::returnToModeChoice() {
   if (phase_ != Phase::Capturing)
     return;
   stopWorker();
+  autoStalled_ = false;
   worker_.reset();
   injectorStop_.reset();
   handshake_.reset();
@@ -1006,13 +1034,15 @@ void ScrollCapturePanel::paintEvent(QPaintEvent *) {
   painter.setRenderHint(QPainter::Antialiasing);
   {
     painter.setCompositionMode(QPainter::CompositionMode_Source);
-    painter.fillRect(rect(), kDim);
+    painter.fillRect(rect(), chromeAlpha(chromeTheme().scrim, 150));
     painter.fillRect(region_, Qt::transparent);
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
     // Drawn first, low-opacity, no card: the live page, the region outline,
     // the pills paint over it wherever they overlap.
     drawHotkeyLegend(painter, rect(), legendEntries());
-    painter.setPen(QPen(statusWarning_ ? kWarn : kAccent, 2));
+    painter.setPen(QPen(statusWarning_
+                           ? QBrush(chromeTheme().warning)
+                           : chromeTheme().selectionBorder.brush(region_), 2));
     painter.setBrush(Qt::NoBrush);
     // Fully outside the region so no overlay pixel lands in the capture.
     painter.drawRect(region_.adjusted(-3, -3, 3, 3));
@@ -1022,18 +1052,18 @@ void ScrollCapturePanel::paintEvent(QPaintEvent *) {
     if (phase_ == Phase::Selected) {
       const int thickness = 4;
       painter.setPen(Qt::NoPen);
-      painter.setBrush(QColor(255, 255, 255, 235));
+      painter.setBrush(chromeAlpha(chromeTheme().foreground, 235));
       for (const auto &[grip, which] : gripRects()) {
         if (which == Grip::Move) {
           const QPointF middle = grip.center();
-          painter.setBrush(QColor(20, 20, 26, 215));
-          painter.setPen(QPen(QColor(255, 255, 255, 235), 2));
+          painter.setBrush(chromeTheme().surface);
+          painter.setPen(QPen(chromeAlpha(chromeTheme().foreground, 235), 2));
           painter.drawEllipse(middle, grip.width() / 2.0 - 2,
                               grip.height() / 2.0 - 2);
           painter.drawLine(middle + QPointF(-9, 0), middle + QPointF(9, 0));
           painter.drawLine(middle + QPointF(0, -9), middle + QPointF(0, 9));
           painter.setPen(Qt::NoPen);
-          painter.setBrush(QColor(255, 255, 255, 235));
+          painter.setBrush(chromeAlpha(chromeTheme().foreground, 235));
           continue;
         }
         if (grip.bottom() < region_.top())
@@ -1050,48 +1080,48 @@ void ScrollCapturePanel::paintEvent(QPaintEvent *) {
               QRect(grip.left(), grip.top(), thickness, grip.height()));
       }
     }
-    QFont buttonFont = painter.font();
-    buttonFont.setPixelSize(15);
-    buttonFont.setBold(true);
+    const QFont buttonFont = chromeFont(15, true);
     painter.setFont(buttonFont);
     if (phase_ == Phase::Selected) {
       for (int index = 0; index < kModeButtonCount; ++index) {
         const QRect button = modeButtonRect(index);
         painter.setPen(Qt::NoPen);
         painter.setBrush(kModeButtons[index].automatic
-                             ? kAccent
-                             : QColor(40, 40, 48, 240));
+                             ? chromeTheme().accent
+                             : chromeTheme().button);
         painter.drawRoundedRect(button, 8, 8);
-        painter.setPen(Qt::white);
+        painter.setPen(kModeButtons[index].automatic ? chromeTheme().accentText
+                                                    : chromeTheme().buttonText);
         painter.drawText(button, Qt::AlignCenter,
                          QString::fromUtf8(kModeButtons[index].label));
       }
       const QRect cancelSlot = selectedCancelButtonRect();
       painter.setPen(Qt::NoPen);
-      painter.setBrush(QColor(40, 40, 48, 240));
+      painter.setBrush(chromeTheme().button);
       painter.drawRoundedRect(cancelSlot, 8, 8);
-      painter.setPen(Qt::white);
+      painter.setPen(chromeTheme().buttonText);
       painter.drawText(cancelSlot, Qt::AlignCenter, QStringLiteral("Cancel"));
     } else {
       const QRect done = doneButtonRect();
       const QRect backRect = backButtonRect();
       const QRect cancelRect = cancelButtonRect();
       painter.setPen(Qt::NoPen);
-      painter.setBrush(kAccent);
+      painter.setBrush(chromeTheme().accent);
       painter.drawRoundedRect(done, 8, 8);
-      painter.setBrush(QColor(40, 40, 48, 240));
+      painter.setBrush(chromeTheme().button);
       painter.drawRoundedRect(backRect, 8, 8);
       painter.drawRoundedRect(cancelRect, 8, 8);
-      painter.setPen(Qt::white);
+      painter.setPen(chromeTheme().accentText);
       painter.drawText(done, Qt::AlignCenter, QStringLiteral("Done · stitch"));
+      painter.setPen(chromeTheme().buttonText);
       painter.drawText(backRect, Qt::AlignCenter, QStringLiteral("Back"));
       painter.drawText(cancelRect, Qt::AlignCenter, QStringLiteral("Cancel"));
       if (autoStalled_) {
         const QRect resume = continueButtonRect();
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(40, 40, 48, 240));
+        painter.setBrush(chromeTheme().button);
         painter.drawRoundedRect(resume, 8, 8);
-        painter.setPen(Qt::white);
+        painter.setPen(chromeTheme().buttonText);
         painter.drawText(resume, Qt::AlignCenter, QStringLiteral("Continue"));
       }
     }
@@ -1123,8 +1153,8 @@ void ScrollCapturePanel::enterEvent(QEnterEvent *event) {
 
 void ScrollCapturePanel::leaveEvent(QEvent *event) {
   // The pointer is off our input region entirely, over the page, or off the
-  // screen. Either way it is not on our chrome, so the keyboard goes back to
-  // whatever is under it and the page can be scrolled again.
+  // screen. Release exclusive focus so the page can be scrolled again, while
+  // remaining eligible for keyboard focus when the user returns.
   setKeyboardGrab(false);
   if (worker_ && !worker_->debugDir.isEmpty())
     qInfo().noquote() << QStringLiteral("scroll: pointer left overlay");
@@ -1252,13 +1282,11 @@ void ScrollCapturePanel::keyPressEvent(QKeyEvent *event) {
     finishCapture();
     return;
   }
-  // A shortcut, never the advertised way: only the pointer being on our own
-  // chrome puts the keyboard here at all.
+  // These shortcuts supplement the buttons whenever the overlay has focus.
   if ((phase_ == Phase::Selected || phase_ == Phase::Capturing) &&
       (event->key() == Qt::Key_S || event->key() == Qt::Key_A)) {
     switchMode(event->key() == Qt::Key_A ? Mode::Auto : Mode::Manual);
     return;
   }
-  // While capturing the layer holds no keyboard, so no key arrives here.
   QWidget::keyPressEvent(event);
 }

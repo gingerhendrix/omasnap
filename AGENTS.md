@@ -4,8 +4,9 @@ Omasnap is a super fast, native Wayland screenshot and annotation overlay.
 This fork is built for Sway on vanilla Arch Linux. It captures region,
 window, or full monitor (plus a scrolling-region mode that stitches a taller
 page into one image), then copies it and opens a floating compositor preview.
-The preview fades after 10 seconds of idle time unless explicitly kept with its
-pin button or Ctrl+P. Hovering and in-progress actions pause its countdown.
+The preview fades after 7 seconds of idle time unless kept with its pin button,
+Ctrl+P, or by dragging it, including within the stack. Hovering and in-progress
+actions pause its countdown.
 It opens an annotation editor on demand, with vector layers
 (arrows, lines, freehand, highlighter, rectangles, ellipses, numbered
 markers, text, OCR). Finished captures go to clipboard,
@@ -52,8 +53,9 @@ change that touches the principle, not just this summary.
   is a fine accident, not a target. No X11, no macOS/Windows. See
   [docs/platform-scope.md](docs/platform-scope.md).
 - **Lean, learned dependencies.** The dependency set is Qt6 + LayerShellQt +
-  wayland-client, plus shelling out to a few existing Arch/Sway tools
-  (`swaymsg`, `wl-copy`/`wl-paste`, `tesseract`, `notify-send`)
+  wayland-client + libdeflate, plus shelling out to a few existing Arch/Sway
+  tools (`swaymsg`, `wl-copy`/`wl-paste`, `tesseract`, `notify-send`,
+  `xdg-open`)
   instead of linking their equivalents in-process. Know this list before
   proposing an addition to it. See [docs/dependencies.md](docs/dependencies.md).
 - **Single small binary.** Everything (capture, editor, pin mode, scroll
@@ -115,13 +117,18 @@ tools and source types are available. Use `make build` for a build-only pass,
 `make smoke` for the behavioral smoke suite, and `make install` to install to
 `~/.local`.
 
+Smoke artifacts belong in `build/smoke-output/` (or `smoke-output/` beside a
+custom build's executable). Direct smoke runs use that default too; use
+`--output-dir <directory>` for an explicit alternative. Keep generated test
+screenshots and other debugging artifacts out of the repository root.
+
 Always run `make check` after behavioral changes. CI
 (`.github/workflows/build-linux.yml`) runs the same build and smoke on every
 push and PR.
 
 Dependencies (Arch): `base-devel cmake ninja pkgconf qt6-base layer-shell-qt
-wayland wayland-protocols sway wl-clipboard libnotify tesseract
-tesseract-data-eng`. See
+wayland wayland-protocols libdeflate sway wl-clipboard libnotify xdg-utils
+tesseract tesseract-data-eng`. See
 [docs/dependencies.md](docs/dependencies.md) before adding to this list.
 
 ## Release process
@@ -136,8 +143,9 @@ tesseract-data-eng`. See
    Copy the new changelog section into the GitHub release notes so users
    can read the changes alongside the download.
 
-Fork syncs rebuild the Sway line on an upstream tag by adapting behaviour,
-not by replaying old patches.
+Fork syncs merge the upstream release tag into a branch cut from `sway`,
+keep the Sway adapters, and record each conflict resolution in the sync
+notes. Upstream's omarchy-pkgs packaging step does not apply to this fork.
 
 See `README.md` for user-facing features, keybindings, and install
 instructions — keep it in sync when behavior changes.

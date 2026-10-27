@@ -5,6 +5,7 @@
 #include <QSaveFile>
 #include <QDateTime>
 #include "pin.hpp"
+#include "chrome-theme.hpp"
 #include "card-stack.hpp"
 #include "capture.hpp"
 #include "pin-file.hpp"
@@ -13,6 +14,7 @@
 #include "icons.hpp"
 #include "overlay-chrome.hpp"
 #include "overlay-dismissal.hpp"
+#include "startup-timing.hpp"
 #include "sway-ipc.hpp"
 
 #include <QApplication>
@@ -29,6 +31,7 @@
 #include <QGuiApplication>
 #include <QHash>
 #include <QImage>
+#include <QImageReader>
 #include <QKeyEvent>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -36,6 +39,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
+#include <QScreen>
 #include <QSocketNotifier>
 #include <QScreen>
 #include <QShowEvent>
@@ -91,6 +95,89 @@ QThreadPool &pinPool() {
   static QThreadPool pool;
   pool.setMaxThreadCount(1);
   return pool;
+}
+
+QString runForOutput(const QString &program, const QStringList &arguments,
+                     bool *ok = nullptr, int timeoutMs = 500) {
+  if (ok)
+    *ok = false;
+  QProcess process;
+  process.start(program, arguments);
+  if (!process.waitForFinished(timeoutMs)) {
+    process.kill();
+    process.waitForFinished(500);
+    return {};
+  }
+  if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
+    return {};
+  if (ok)
+    *ok = true;
+  return QString::fromUtf8(process.readAllStandardOutput());
+}
+
+QString sharedPinPath(const QString &path, const QString &shared,
+                      QString &error) {
+  if (!shared.isEmpty() && QFileInfo::exists(shared))
+    return shared;
+  OperationLog metadata;
+  const QString sidecar = operationLogPath(path);
+  if (QFile::exists(sidecar)) {
+    if (!loadOperationLog(sidecar, metadata, error))
+      return {};
+    if (!metadata.savedPath.isEmpty()) {
+      if (QFileInfo(metadata.savedPath).isFile())
+        return metadata.savedPath;
+      error = QStringLiteral("Saved screenshot is no longer available");
+      return {};
+    }
+  }
+  const QFileInfo source(path);
+  if (!source.isFile()) {
+    error = QStringLiteral("Screenshot file is no longer available");
+    return {};
+  }
+  // Runtime previews disappear when closed. Path sharing and revealing use
+  // one durable copy of the current rendered PNG, including returned edits.
+  return source.absolutePath() == secureRuntimeDirectory()
+             ? copySnapshotToScreenshots(path, error) : source.absoluteFilePath();
+}
+
+bool revealFileInFolder(const QString &path, QString &error) {
+  const QFileInfo file(path);
+  if (!file.isFile()) {
+    error = QStringLiteral("Screenshot file is no longer available");
+    return false;
+  }
+  // The generic FileManager1 service can belong to a different application
+  // than the user's folder default. Ask the configured application itself;
+  // D-Bus-activatable desktop IDs name their service without ".desktop".
+  QString application = runForOutput(
+      QStringLiteral("xdg-mime"), {QStringLiteral("query"),
+                                    QStringLiteral("default"),
+                                    QStringLiteral("inode/directory")}).trimmed();
+  if (application.endsWith(QLatin1StringView(".desktop"))) {
+    application.chop(8);
+    bool revealed = false;
+    static_cast<void>(runForOutput(
+        QStringLiteral("busctl"),
+        {QStringLiteral("--user"), QStringLiteral("--timeout=3s"),
+         QStringLiteral("--"), QStringLiteral("call"), application,
+         QStringLiteral("/org/freedesktop/FileManager1"),
+         QStringLiteral("org.freedesktop.FileManager1"), QStringLiteral("ShowItems"),
+         QStringLiteral("ass"), QStringLiteral("1"),
+         QUrl::fromLocalFile(file.absoluteFilePath()).toString(QUrl::FullyEncoded),
+         QString()}, &revealed, 4000));
+    if (revealed)
+      return true;
+  }
+  // File managers without ShowItems still open their containing folder via
+  // the user's association. Detach: the chosen browser may stay in this process.
+  if (QProcess::startDetached(
+          QStringLiteral("xdg-open"),
+          {QUrl::fromLocalFile(file.absolutePath()).toString(QUrl::FullyEncoded)}))
+    return true;
+  error = QStringLiteral("Could not open the file browser");
+  return false;
 }
 
 bool swayDispatch(const QString &command) { return swayCommand(command); }
@@ -504,9 +591,11 @@ struct PinPreview {
   QImage image;
   QByteArray png;
   QImage drag;
+  bool replaced = false;
 };
 
 class PinWindow final : public QWidget {
+  friend bool runPinRevealSmoke(QString &error);
 public:
   explicit PinWindow(QImage image, QString path, const QSize &frame,
                       PinLifetime lifetime = PinLifetime::Persistent)
@@ -521,17 +610,7 @@ public:
     // its own instead of first stretching it into a tile.
     setFixedSize(frame);
     setAttribute(Qt::WA_AlwaysShowToolTips, true);
-    // Native tooltips need the same explicit font and dark chrome as the
-    // painted controls; the generic Qt theme otherwise supplies yellow tips.
     QToolTip::setFont(chromeFont(11));
-    setStyleSheet(QStringLiteral(
-        "QToolTip {"
-        " color: #f5f5f7;"
-        " background-color: #121216;"
-        " border: 1px solid #3a3a40;"
-        " border-radius: 4px;"
-        " padding: 0;"
-        "}"));
     setMouseTracking(true);
     connect(&expiry_, &PinExpiry::opacityChanged, this, [this](qreal opacity) {
       opacity_ = opacity;
@@ -593,6 +672,10 @@ public:
     connect(&documentWatcher_, &QFutureWatcher<PinPreview>::finished, this, [this] {
       documentLoading_ = false;
       const auto preview = documentWatcher_.result();
+      if (preview.replaced) {
+        close();
+        return;
+      }
       if (!closing_ && !preview.image.isNull()) {
         image_ = preview.image;
         dragPng_ = preview.png;
@@ -771,6 +854,10 @@ protected:
   }
 
   void paintEvent(QPaintEvent *) override {
+    if (!painted_) {
+      startupTimingMark("pin first paint");
+      painted_ = true;
+    }
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
@@ -787,7 +874,7 @@ protected:
     const QPainterPath card = cardPath();
     painter.save();
     painter.setClipPath(card);
-    painter.fillRect(rect(), QColor(18, 18, 22));
+    painter.fillRect(rect(), chromeTheme().surface);
     if (!image_.isNull()) {
       const qreal scale =
           std::max(static_cast<qreal>(width()) / image_.width(),
@@ -798,11 +885,11 @@ protected:
     }
     painter.restore();
     painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(hovered_ ? QColor(140, 179, 209, 210)
-                                : QColor(255, 255, 255, 75), 1.5));
+    painter.setPen(QPen((hovered_ ? chromeTheme().activeBorder
+                                  : chromeTheme().inactiveBorder).brush(rect()), 1.5));
     painter.drawPath(card);
     if (expiry_.kept() && !hovered_)
-      drawControlButton(painter, pinButtonRect(), QStringLiteral("pin"), true);
+      drawControlButton(painter, pinButtonRect(), QStringLiteral("pin"));
     painter.restore();
     if (!toast_.isEmpty())
       paintToast(painter);
@@ -810,26 +897,29 @@ protected:
       return;
 
     drawControlButton(painter, dragButtonRect(), QStringLiteral("drag-handle"));
-    drawControlButton(painter, editButtonRect(), QStringLiteral("edit"), false,
+    drawControlButton(painter, editButtonRect(), QStringLiteral("edit"),
                        QStringLiteral("Edit"));
-    drawControlButton(painter, pinButtonRect(), QStringLiteral("pin"), expiry_.kept());
+    drawControlButton(painter, pinButtonRect(), QStringLiteral("pin"));
     drawControlButton(painter, pathButtonRect(), QStringLiteral("path"));
-    drawControlButton(painter, copyButtonRect(), QStringLiteral("copy"), false,
+    drawControlButton(painter, revealButtonRect(), QStringLiteral("folder"));
+    drawControlButton(painter, copyButtonRect(), QStringLiteral("copy"),
                        QStringLiteral("Copy"));
     drawControlButton(painter, closeButtonRect(), QStringLiteral("close"));
   }
 
   void drawControlButton(QPainter &painter, const QRectF &rect,
-                         const QString &action, bool active = false,
+                         const QString &action,
                          const QString &label = {}) const {
     painter.setPen(Qt::NoPen);
     const bool hovered = hovered_ && rect == controlRect(hoveredControl_);
-    painter.setBrush(active ? QColor(37, 58, 75, 235)
-                            : hovered ? QColor(37, 42, 52, 240)
-                                      : QColor(12, 12, 16, 210));
+    painter.setBrush(hovered ? chromeTheme().buttonHover : chromeTheme().button);
     painter.drawRoundedRect(rect, 6, 6);
-    const QColor foreground = active ? QColor(140, 179, 209)
-                                     : QColor(245, 245, 247);
+    // Kept state is independent of hover. Gradient borders use their leading
+    // color for the small pin glyph.
+    const QColor foreground = action == QStringLiteral("pin") && expiry_.kept()
+                                  ? chromeTheme().activeBorder.colors.constFirst()
+                              : hovered ? chromeTheme().buttonHoverText
+                                        : chromeTheme().buttonText;
     if (label.isEmpty()) {
       drawToolbarIcon(painter, rect, action, {}, foreground);
     } else {
@@ -846,9 +936,9 @@ protected:
                       26);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(12, 12, 16, 205));
+    painter.setBrush(chromeTheme().toastBackground);
     painter.drawRoundedRect(pill, 13, 13);
-    painter.setPen(QColor(240, 240, 245));
+    painter.setPen(chromeTheme().toastText);
     painter.drawText(pill, Qt::AlignCenter, toast_);
   }
 
@@ -877,6 +967,10 @@ protected:
       }
       if (pathButtonRect().contains(position)) {
         copyPath();
+        return;
+      }
+      if (revealButtonRect().contains(position)) {
+        revealFile();
         return;
       }
       if (editButtonRect().contains(position)) {
@@ -946,8 +1040,7 @@ protected:
       endStackDrag();
       return;
     }
-    if (!dragMoved_ && rect != dragStartRect_)
-      dragMoved_ = true;
+    recordDragMovement(rect);
     if (dragMoved_)
       previewInsertion(rect);
     const bool still = rect == dragPreviousRect_;
@@ -1049,7 +1142,8 @@ protected:
     // One last look at the true final position; the last poll can be a
     // frame behind it.
     const QRect rect = ownCompositorRect();
-    if (!dragMoved_ && rect == dragStartRect_) {
+    recordDragMovement(rect);
+    if (!dragMoved_) {
       endStackDrag();
       return;
     }
@@ -1178,7 +1272,7 @@ protected:
       watcher->deleteLater();
       actionPending_ = false;
       updateExpiryPause();
-      // Reuse a successful save even if the following clipboard write failed.
+      // Reuse a successful save even if copying or revealing it failed.
       if (!result.sharedPath.isEmpty())
         sharedPath_ = result.sharedPath;
       if (result.document && !pinDocument_) {
@@ -1196,28 +1290,38 @@ protected:
   }
 
   void copyImage() {
-    runAction([image = image_] {
+    runAction([path = path_, image = image_] {
       QString error;
-      static_cast<void>(copyImageToClipboard(image, error));
+      // Internal thumbnails are display-only. Public --pin files may use
+      // another format, in which case image still holds their full pixels.
+      // A missing internal PNG must fail rather than copy its thumbnail.
+      if (PinSnapshotFile::isOwnedPath(path) ||
+          QImageReader::imageFormat(path) == "png")
+        static_cast<void>(copyPngFileToClipboard(path, error));
+      else
+        static_cast<void>(copyImageToClipboard(image, error));
       return ActionResult{error, {}, {}};
     }, QStringLiteral("Copied to clipboard"));
   }
 
   void copyPath() {
-    runAction([path = path_, shared = sharedPath_]() mutable {
+    runAction([path = path_, shared = sharedPath_] {
       QString error;
-      if (shared.isEmpty() || !QFileInfo::exists(shared)) {
-        // Runtime captures disappear with their previews. Copy the encoded
-        // PNG once so a shared path remains useful after expiry or closing.
-        // An existing file opened with --pin already has its own lifetime.
-        const QFileInfo source(path);
-        shared = source.absolutePath() == secureRuntimeDirectory()
-                     ? copySnapshotToScreenshots(path, error) : source.absoluteFilePath();
-      }
-      if (!shared.isEmpty())
-        static_cast<void>(copyTextToClipboard(shared, error));
-      return ActionResult{error, shared, {}};
+      const QString saved = sharedPinPath(path, shared, error);
+      if (!saved.isEmpty())
+        static_cast<void>(copyTextToClipboard(saved, error));
+      return ActionResult{error, saved, {}};
     }, QStringLiteral("Copied path"));
+  }
+
+  void revealFile() {
+    runAction([path = path_, shared = sharedPath_] {
+      QString error;
+      const QString saved = sharedPinPath(path, shared, error);
+      if (!saved.isEmpty())
+        static_cast<void>(revealFileInFolder(saved, error));
+      return ActionResult{error, saved, {}};
+    }, {});
   }
 
   void reopenInEditor() {
@@ -1259,6 +1363,13 @@ protected:
     documentLoading_ = true;
     documentWatcher_.setFuture(QtConcurrent::run([document = pinDocument_] {
       PinPreview result;
+      OperationLog log;
+      QString error;
+      if (loadOperationLog(operationLogPath(document->path()), log, error) &&
+          !log.savedPath.isEmpty()) {
+        result.replaced = true;
+        return result;
+      }
       QFile file(document->previewPath());
       if (file.open(QIODevice::ReadOnly)) {
         result.png = file.readAll();
@@ -1363,6 +1474,9 @@ protected:
     if (hovered_) {
       if (event->modifiers() == Qt::NoModifier) {
         switch (event->key()) {
+        case Qt::Key_T:
+          toggleKept();
+          return;
         case Qt::Key_A:
         case Qt::Key_E:
           reopenInEditor();
@@ -1373,6 +1487,9 @@ protected:
         case Qt::Key_L:
         case Qt::Key_F:
           copyPath();
+          return;
+        case Qt::Key_R:
+          revealFile();
           return;
         default:
           break;
@@ -1454,6 +1571,15 @@ protected:
   }
 
 private:
+  void recordDragMovement(const QRect &rect) {
+    if (dragMoved_ || rect.isEmpty() || rect == dragStartRect_)
+      return;
+    dragMoved_ = true;
+    // Moving a preview expresses intent to keep it, even within the stack.
+    // A click or arming the compositor drag watch alone does not pin it.
+    expiry_.setKept(true);
+  }
+
   void updateExpiryPause() {
     expiry_.setPaused(closing_ || hovered_ || stackInteracting_ || actionPending_ ||
                       fileDragActive_ || dragWatchTimer_.isActive() ||
@@ -1464,7 +1590,7 @@ private:
     expiry_.setKept(!expiry_.kept());
     QToolTip::hideText();
     showToast(expiry_.kept() ? QStringLiteral("Pinned")
-                             : QStringLiteral("Fades after 10 seconds"));
+                             : QStringLiteral("Fades after 7 seconds"));
   }
 
   QPainterPath cardPath() const {
@@ -1542,12 +1668,14 @@ private:
 
   [[nodiscard]] QRectF pinButtonRect() const { return controlRect(5); }
 
+  [[nodiscard]] QRectF revealButtonRect() const { return controlRect(6); }
+
   [[nodiscard]] QRectF controlRect(int index) const {
     return pinControlRect(size(), index);
   }
 
   [[nodiscard]] int controlRectAt(const QPointF &position) const {
-    for (int index = 0; index < 6; ++index) {
+    for (int index = 0; index < 7; ++index) {
       if (controlRect(index).contains(position))
         return index;
     }
@@ -1555,6 +1683,7 @@ private:
   }
 
   QImage image_;
+  bool painted_ = false;
   PinExpiry expiry_;
   qreal opacity_ = 1.0;
   bool expired_ = false;
@@ -1615,7 +1744,14 @@ private:
 } // namespace
 
 int runPinnedCapture(const QString &path, PinLifetime lifetime) {
-  QImage image(path);
+  QImage image;
+  {
+    StartupTimingScope timing("load pin display image");
+    if (PinSnapshotFile::isOwnedPath(path))
+      image.load(PinSnapshotFile::thumbnailPath(path));
+    if (image.isNull())
+      image.load(path);
+  }
   if (image.isNull()) {
     qWarning("omasnap: could not load pinned image %s", qUtf8Printable(path));
     return 1;
@@ -1636,6 +1772,7 @@ int runPinnedCapture(const QString &path, PinLifetime lifetime) {
     const auto result = watcher->result();
     if (!result.first.isEmpty()) {
       window.setPlacementSnapshot(result.first, result.second);
+      startupTimingMark("pin placement complete");
       watcher->deleteLater();
       settle->deleteLater();
     } else if (++attempts < 10) {
@@ -1662,6 +1799,10 @@ int runPinnedCapture(const QString &path, PinLifetime lifetime) {
         return {};
       if (!own->pinned && !swayDispatch(pinPinDispatch(own->address)))
         return {};
+      // Upstream re-applies Hyprland frame properties here because a theme
+      // reload drops its rules. Sway keeps `border none` on the container
+      // itself (set by the rule or by pinFloatDispatch), and a reload does
+      // not reset it, so no extra command is needed.
       // A new capture is the front of the idle deck. Keep an already-open
       // fan exposed, and never rearrange pins during somebody else's drag.
       if (!placement.dragging().isEmpty())

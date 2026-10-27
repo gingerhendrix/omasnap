@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(omasnap VERSION 1.21.0 LANGUAGES C CXX)
+project(omasnap VERSION 1.24.0 LANGUAGES C CXX)
 include(GNUInstallDirs)
 include(CTest)
 set(CMAKE_AUTOMOC ON)
@@ -8,6 +8,7 @@ find_package(PkgConfig REQUIRED)
 find_package(Qt6 6.8 REQUIRED COMPONENTS Concurrent Core Gui Test Widgets)
 find_package(LayerShellQt REQUIRED)
 pkg_check_modules(WaylandClient REQUIRED IMPORTED_TARGET wayland-client)
+pkg_check_modules(Libdeflate REQUIRED IMPORTED_TARGET libdeflate)
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
 set(PROTOCOL_XMLS
@@ -46,6 +47,8 @@ add_library(omasnap-core STATIC
   src/pin-file.hpp
   src/pin-layout.cpp
   src/pin-layout.hpp
+  src/png.cpp
+  src/png.hpp
   src/capture.cpp
   src/capture.hpp
   src/cut.cpp
@@ -62,6 +65,10 @@ add_library(omasnap-core STATIC
   src/pin-expiry.hpp
   src/overlay-chrome.cpp
   src/overlay-chrome.hpp
+  src/shortcut-guide.cpp
+  src/shortcut-guide.hpp
+  src/chrome-theme.cpp
+  src/chrome-theme.hpp
   src/eyedropper.cpp
   src/eyedropper.hpp
   src/surface-capture.cpp
@@ -83,6 +90,7 @@ add_library(omasnap-core STATIC
   src/sway-ipc.hpp
   ${PROTOCOL_SOURCES}
   src/editor.cpp
+  src/editor-save-as.cpp
   src/editor.hpp
 )
 qt_add_resources(omasnap-core "capture-fonts"
@@ -135,6 +143,7 @@ target_link_libraries(omasnap-core PUBLIC
   Qt6::Widgets
   LayerShellQt::Interface
   PkgConfig::WaylandClient
+  PkgConfig::Libdeflate
 )
 
 qt_add_executable(omasnap src/main.cpp src/pin.cpp src/pin.hpp)
@@ -145,9 +154,19 @@ target_precompile_headers(omasnap REUSE_FROM omasnap-core)
 
 if(BUILD_TESTING)
 qt_add_executable(omasnap-smoke
+  tests/scroll-focus-smoke.cpp
+  tests/scroll-focus-smoke.hpp
+  tests/chrome-theme-smoke.cpp
+  tests/chrome-theme-smoke.hpp
   tests/editor-smoke.cpp
+  tests/recent-persistence-smoke.cpp
+  tests/recent-persistence-smoke.hpp
+  tests/selection-repaint-smoke.cpp
+  tests/selection-repaint-smoke.hpp
   tests/clipboard-smoke.cpp
   tests/clipboard-smoke.hpp
+  tests/png-smoke.cpp
+  tests/png-smoke.hpp
   tests/instance-lock-smoke.cpp
   tests/instance-lock-smoke.hpp
   tests/transform-smoke.cpp
@@ -184,6 +203,10 @@ qt_add_executable(omasnap-smoke
   tests/stitch-smoke.hpp
   tests/sway-capture-smoke.cpp
   tests/sway-capture-smoke.hpp
+  tests/scroll-startup-smoke.cpp
+  tests/scroll-startup-smoke.hpp
+  tests/save-as-smoke.cpp
+  tests/save-as-smoke.hpp
 )
 target_include_directories(omasnap-smoke PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
@@ -194,7 +217,7 @@ target_compile_definitions(omasnap-smoke PRIVATE
 )
 target_link_libraries(omasnap-smoke PRIVATE omasnap-core Qt6::Test)
 target_precompile_headers(omasnap-smoke REUSE_FROM omasnap-core)
-add_test(NAME omasnap-smoke COMMAND omasnap-smoke "${CMAKE_CURRENT_BINARY_DIR}/omasnap-smoke-output")
+add_test(NAME omasnap-smoke COMMAND omasnap-smoke)
 set_tests_properties(omasnap-smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 

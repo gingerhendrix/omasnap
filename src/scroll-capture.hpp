@@ -16,6 +16,7 @@
 #include "capture.hpp"
 #include "overlay-chrome.hpp"
 #include "stitch.hpp"
+#include "scroll-inject.hpp"
 
 #include <QFuture>
 #include <QImage>
@@ -31,6 +32,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <functional>
 #include <utility>
 #include <optional>
 
@@ -133,7 +135,10 @@ private:
   /// the worker has stopped.
   struct Worker;
 
+  friend bool runScrollStartupSmoke(QString &error);
   void startCapture(Mode mode, stitch::Axis axis);
+  void startManualCapture();
+  void startInjector(bool continuing);
   void stopWorker();
   void finishCapture();
   void cancel();
@@ -141,10 +146,9 @@ private:
   /// the keyboard over by zone, and offer the modes.
   void enterSelected();
   void applyInputRegion();
-  /// Takes or releases the exclusive keyboard grab. Held only while a region
-  /// is being drawn; released for as long as one exists, because Hyprland
-  /// pins pointer focus to a layer that holds it and the page underneath has
-  /// to stay scrollable.
+  /// Takes exclusive keyboard focus over the chrome, or switches to on-demand
+  /// focus over the live page. Hyprland pins pointer focus to an exclusive
+  /// layer, so the grab must be released for the page to stay scrollable.
   void setKeyboardGrab(bool grab);
   /// Holds the grab only while the pointer is on the overlay's own chrome, and
   /// only when an event has said where the pointer is.
@@ -221,9 +225,14 @@ private:
 
   std::unique_ptr<Worker> worker_;
   QFuture<void> workerFuture_;
+  // Changed only after the capture worker stops, so that worker can safely
+  // copy it when queueing a notice. Deferred starts share the same identity.
+  quint64 captureGeneration_ = 0;
   std::atomic<bool> stopRequested_{false};
   /// Auto mode: the injection worker's shared stop flag (it also sets this
   /// itself on any exit) and the capture handshake.
+  // Copied into each setup job; no panel state is accessed on that worker.
+  std::function<decltype(spawnScrollInjector)> injectorStarter_ = spawnScrollInjector;
   std::shared_ptr<std::atomic<bool>> injectorStop_;
   std::shared_ptr<stitch::CaptureHandshake> handshake_;
 };

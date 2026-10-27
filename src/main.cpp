@@ -1,6 +1,7 @@
 #include <QFutureWatcher>
 #include <QtConcurrent/QtConcurrentRun>
 #include "capture.hpp"
+#include "chrome-theme.hpp"
 #include "cli-path.hpp"
 #include "editor.hpp"
 #include "instance-lock.hpp"
@@ -10,6 +11,7 @@
 #include "pin.hpp"
 #include "pin-file.hpp"
 #include "recent-snaps.hpp"
+#include "shortcut-guide.hpp"
 #include "startup-timing.hpp"
 #include "sway-ipc.hpp"
 
@@ -115,28 +117,22 @@ int main(int argc, char **argv) {
   QCoreApplication::setApplicationName(QStringLiteral("omasnap"));
   QCoreApplication::setApplicationVersion(QString::fromLatin1(OMASNAP_VERSION));
   QCoreApplication::setOrganizationName(QStringLiteral("Omasnap"));
-  // Choose the Wayland shell before Qt connects. Pins and file editors
-  // use compositor windows; fresh captures select on a fullscreen overlay.
+  // Resolve editor presentation before Qt consumes its own command-line flags.
   QStringList rawArguments;
   for (int index = 0; index < argc; ++index)
     rawArguments.push_back(QString::fromLocal8Bit(argv[index]));
   QCommandLineParser startupParser;
   configureCaptureCommandLine(startupParser, true);
   const bool startupParsed = startupParser.parse(rawArguments);
-  const bool pinInvocation = startupParsed &&
-      (startupParser.isSet(QStringLiteral("pin")) || startupParser.isSet(QStringLiteral("preview")));
   const bool windowedEditorProcess = startupParsed &&
       windowedEditorRequested(startupParser, loadEditorWindowMode(defaultConfigPath()));
-  if (pinInvocation || windowedEditorProcess) {
-    // Child windows can inherit layer-shell from their capture overlay.
-    qunsetenv("QT_WAYLAND_SHELL_INTEGRATION");
-  } else {
-    qputenv("QT_WAYLAND_SHELL_INTEGRATION", "layer-shell");
-  }
+  // Window::get below gives only the capture surface a layer-shell role.
+  // Dialogs and pinned windows keep Qt's normal xdg-shell integration.
+  qunsetenv("QT_WAYLAND_SHELL_INTEGRATION");
   // Omarchy exports QT_QPA_PLATFORMTHEME=gtk3 session-wide. Honouring it
   // loads the qgtk3 plugin, which initialises GTK inside this process
   // (measured 81-112 ms of QApplication construction, plus ~20-24 MiB of
-  // RSS) for a hand-painted overlay that opens no dialogs and reads no palette.
+  // RSS) for hand-painted chrome and Qt's own file chooser.
   // Qt's built-in generic theme is all it needs, so select it by name
   // (an empty value would let Qt pick a theme from XDG_CURRENT_DESKTOP
   // instead). The chrome font is pinned in chromeFont() rather than taken
@@ -161,6 +157,12 @@ int main(int argc, char **argv) {
   configureCaptureCommandLine(parser);
   parser.process(application);
   startupTimingMark("command line parsed");
+  // The environment carries --notify to the pins and editors this starts.
+  if (parser.isSet(QStringLiteral("notify")))
+    qputenv("OMASNAP_NOTIFY", "1");
+  // After parsing: --help and --version exit() inside process(), which skips
+  // ~QApplication's wait for the theme loader thread and crashes its teardown.
+  initializeChromeTheme();
 
   QString filePath = parser.value(QStringLiteral("file"));
   const bool clipboardInput = parser.isSet(QStringLiteral("clipboard"));
@@ -253,6 +255,15 @@ int main(int argc, char **argv) {
   if (clipboardInput && (!filePath.isEmpty() || requestedModes > 0)) {
     qCritical() << "Clipboard input cannot be combined with another target";
     return 2;
+  }
+  // A --notify toast's Edit reopens its capture's layers from the recent
+  // shelf, like the overlay's recent cards; the image given alongside is the
+  // fallback once the shelf has dropped that capture.
+  std::optional<RecentSnap> reopenedRecent;
+  if (parser.isSet(QStringLiteral("recent"))) {
+    reopenedRecent = findRecentSnap(parser.value(QStringLiteral("recent")));
+    if (reopenedRecent)
+      filePath = reopenedRecent->sourcePath;
   }
   const bool editingImage = clipboardInput || !filePath.isEmpty();
   if (editingImage && quickOutputMode != QuickOutputMode::None) {
@@ -386,7 +397,7 @@ int main(int argc, char **argv) {
                               : renderCapture(capture,
                                               QRectF(QPointF(), capture.previewSize), {},
                                               BackgroundStyle::None);
-    if (!quickOutput(output, quickOutputMode, outputError)) {
+    if (!quickOutput(output, quickOutputMode, outputError, capture.previewSize)) {
       qCritical().noquote() << outputError;
       return 1;
     }
@@ -419,6 +430,8 @@ int main(int argc, char **argv) {
   CaptureEditor editor(std::move(capture), captureMode, quickOutputMode,
                        restoredLog, nullptr, editorWindowMode && !editingImage);
   editor.setPinDocument(std::move(pinDocument));
+  if (reopenedRecent)
+    editor.setEditingRecent(std::move(*reopenedRecent));
   startupTimingMark("CaptureEditor constructed");
   editor.setScreen(targetScreen);
   if (windowedEditorProcess && editingImage) {
@@ -501,7 +514,13 @@ int main(int argc, char **argv) {
       });
       settle->start();
     }
-    return application.exec();
+    const int result = application.exec();
+    // The closed editor may still be retaining its recent document. A fresh
+    // capture must not mistake that background save for an active overlay.
+    editor.hide();
+    ShortcutGuide::finishSavingChoice();
+    instanceLock.unlock();
+    return result;
   }
   editor.setGeometry(targetScreen->geometry());
   editor.winId();
@@ -531,5 +550,9 @@ int main(int argc, char **argv) {
   editor.setFocus(Qt::ActiveWindowFocusReason);
   startupTimingMark("show requested; entering event loop");
 
-  return application.exec();
+  const int result = application.exec();
+  editor.hide();
+  ShortcutGuide::finishSavingChoice();
+  instanceLock.unlock();
+  return result;
 }

@@ -13,6 +13,7 @@
 #include <QFutureWatcher>
 #include <QPlainTextEdit>
 #include <QPixmap>
+#include <QPointer>
 #include <QRegion>
 #include <QLineF>
 #include <QTimer>
@@ -21,8 +22,10 @@
 #include <optional>
 #include <memory>
 
+class QFileDialog;
 class QKeyEvent;
 class QCloseEvent;
+class QEnterEvent;
 class QMouseEvent;
 class QPaintEvent;
 class QWheelEvent;
@@ -30,6 +33,7 @@ class QWheelEvent;
 class QPainter;
 
 class InlineTextEdit;
+class ShortcutGuide;
 class ScrollCapturePanel;
 class PinSnapshotFile;
 namespace LayerShellQt {
@@ -80,7 +84,7 @@ public:
   /**
    * Blocks until the in-flight snapshot persistence has drained, letting the
    * event loop run meanwhile. Returns whether the last write succeeded.
-   * Used by finish() and the headless smoke suite.
+   * Headless smoke suite only.
    */
   bool waitForSnapshot();
   /**
@@ -107,6 +111,11 @@ public:
   [[nodiscard]] QRectF currentSelection() const { return selection_; }
   /** Annotation-space canvas, including any strips grown past the source. */
   [[nodiscard]] QRectF currentCanvasForTest() const { return canvasRect_; }
+  /** Canvas the edit view shows right now: the settled one, or the preview a
+   *  carried layer or a label being typed gives it. */
+  [[nodiscard]] QRectF liveCanvasForTest() const {
+    return liveCanvas(liveLayers(cursor_)).rect;
+  }
   [[nodiscard]] CanvasBoundaryMode currentCanvasBoundaryForTest() const {
     return canvasBoundaryMode_;
   }
@@ -130,6 +139,8 @@ public:
   void setPinDocument(std::shared_ptr<PinSnapshotFile> document) {
     pinDocument_ = std::move(document);
   }
+  /// Saving updates this recent capture in place instead of adding another.
+  void setEditingRecent(RecentSnap recent) { editingRecent_ = std::move(recent); }
 
   /**
    * Disables working-snapshot persistence. The hidden editor behind instant
@@ -142,7 +153,9 @@ protected:
   bool eventFilter(QObject *watched, QEvent *event) override;
   void closeEvent(QCloseEvent *event) override;
   void keyPressEvent(QKeyEvent *event) override;
+  bool focusNextPrevChild(bool next) override;
   void keyReleaseEvent(QKeyEvent *event) override;
+  void enterEvent(QEnterEvent *event) override;
   void leaveEvent(QEvent *event) override;
   void mouseMoveEvent(QMouseEvent *event) override;
   void mouseDoubleClickEvent(QMouseEvent *event) override;
@@ -224,8 +237,8 @@ private:
     OutputMode mode = OutputMode::Copy;
     QString saved;
     QString error;
-    /// Small flattened preview for the recents shelf.
-    QImage thumbnail;
+    bool snapshotsSuppressed = false;
+    bool savedPreview = false;
   };
   /// What reopening a shelved capture reads off disk: the full-resolution
   /// source plus its operation log. Loaded on the worker pool, not the UI
@@ -271,6 +284,7 @@ private:
   /// the layer it belongs to.
   [[nodiscard]] Interaction selectedHandleAt(const QPointF &point) const;
   [[nodiscard]] Interaction pointerHandle() const;
+  [[nodiscard]] bool draggingPointHandle() const;
   [[nodiscard]] Qt::CursorShape handleCursorShape(Interaction handle) const;
   /// Moves the edges a box handle owns, keeping the opposite ones put; Shift
   /// on a corner keeps the proportions.
@@ -287,6 +301,9 @@ public:
   /// Apply a cut as if the user had dragged that band. Test hook: operate on
   /// a fixture raster without going through widget coordinates.
   void applyCutForTest(CutOp cut) { commitCut(std::move(cut)); }
+  /// Composed source after cuts. Test accessor: insert-band smoke checks
+  /// the transparent gap on the working image, not the flattened export.
+  [[nodiscard]] QImage composedSourceForTest() const { return capture_.source; }
   /// Number of selected layers. Test accessor.
   [[nodiscard]] int selectedCountForTest() const {
     return static_cast<int>(selectedAnnotations_.size());
@@ -315,6 +332,17 @@ public:
   void setSnapshotFutureForTest(const QFuture<bool> &future) {
     snapshotBusy_ = true;
     snapshotWatcher_.setFuture(future);
+  }
+  /// Starts a new selection without invoking live scrolling capture.
+  void returnToSelectForTest() { returnToSelect(); }
+  /// Simulates a configured custom backdrop still decoding on a worker.
+  void setBackdropFutureForTest(const QFuture<QImage> &future) {
+    configuredCustomDefaultPending_ = true;
+    backdropWatcher_.setFuture(future);
+  }
+  /// Holds output open to verify destruction preserves worker-owned files.
+  void setFinishFutureForTest(QFuture<bool> future) {
+    finishWatcher_.setFuture(future.then([](bool) { return FinishResult{}; }));
   }
   /// Exercises output/handoff without starting another smoke-test process.
   void setProcessLauncherForTest(
@@ -383,6 +411,10 @@ public:
   [[nodiscard]] bool windowModeForTest() const { return windowMode_; }
   /// Whether clicks are inferred as window/fullscreen while drags stay areas.
   [[nodiscard]] bool smartModeForTest() const { return smartMode_; }
+  /// The aspect a dragged area is held to, as Tab cycles it. Test accessor.
+  [[nodiscard]] QString regionAspectLabelForTest() const {
+    return regionAspectLabel();
+  }
   /// Where the image is drawn on screen right now (widget pixels), and the
   /// annotation-space-to-widget scale. Test accessor: lets a test compute
   /// exact click/expectation points from real geometry instead of hand math.
@@ -467,6 +499,9 @@ private:
   /// Top of the toolbar row: just under the tab strip's fixed bottom edge,
   /// independent of the image, so the two can never overlap.
   [[nodiscard]] QSizeF windowLegendSize() const;
+  [[nodiscard]] QVector<QPair<QString, QString>> captureHotkeyEntries() const;
+  [[nodiscard]] QString regionAspectLabel() const;
+  void cycleRegionAspect(bool forward);
   mutable int legendWidth_ = -1;
   mutable QSizeF legendSize_;
   [[nodiscard]] qreal toolbarTop() const;
@@ -482,7 +517,8 @@ private:
   /// zoom 1, the viewport band once zoomed (the content fills it then).
   [[nodiscard]] qreal chromeAnchorTop() const;
   /// baseImageRect transformed by the current view zoom and pan (content and
-  /// annotations map through this). Equals baseImageRect at zoom 1.
+  /// annotations map through this). Crop drags hold the source mapping fixed
+  /// until release. Otherwise equals baseImageRect at zoom 1.
   [[nodiscard]] QRectF editImageRect() const;
   /// Fullscreen content band where a canvas-growing tool may begin outside
   /// the current canvas, excluding the toolbar and bottom status chrome.
@@ -548,7 +584,8 @@ private:
   /// Back from the editor to the select phase: the op log is dropped and the
   /// frozen screen is offered again for a new region or window.
   void returnToSelect();
-  void dismissEditor();
+  void dismissEditor(bool remember = true);
+  [[nodiscard]] OperationLog currentOperationLog() const;
   void cancelEditInteraction();
   /// Scroll capture takes over the surface with `region` drawn.
   void startScrollCapture(const QRect &region);
@@ -591,7 +628,10 @@ private:
   [[nodiscard]] EditState editState() const;
   void refreshCanvasRect();
   [[nodiscard]] bool canvasGrown() const;
+  /** Whether `canvas` reaches past the source frame on any side. */
+  [[nodiscard]] bool exceedsSourceFrame(const QRectF &canvas) const;
   [[nodiscard]] BackgroundStyle effectiveBackgroundStyle() const;
+  [[nodiscard]] bool hasCaptureBackground() const;
   void enterEdit(QString status);
   /// Routes a confirmed screen selection to quick export or the editor.
   void enterSelectedCapture(QString editStatus);
@@ -600,6 +640,8 @@ private:
   void ensureTextEditor();
   void layoutTextEditor();
   [[nodiscard]] bool textEditing() const;
+  /// The shortcuts card belongs to this presentation, open or closed.
+  [[nodiscard]] bool shortcutGuideAllowed() const;
 public:
 
 private:
@@ -612,6 +654,7 @@ private:
   void commitDelete(const QVector<int> &indices);
   void commitCrop(const QRectF &crop);
   void commitCut(CutOp cut);
+  [[nodiscard]] bool cutInsertHint() const;
   void commitBackground(BackgroundStyle style, bool imageShadow);
   void commitCanvasBoundary(CanvasBoundaryMode mode);
   void cycleCanvasBoundary(bool reverse);
@@ -619,6 +662,12 @@ private:
   void replayLog();
   void redoEdit();
   void selectWindowInDirection(int key);
+  friend bool runSaveAsSmoke(QString &error);
+  void cancelSaveAs();
+  void restoreSaveAsFocus();
+  void saveAs();
+  void showSaveAsDialog(const QString &suggested);
+  void saveAsToPath(const QString &path);
   void finish(OutputMode mode);
   void completeFinish(const FinishResult &result);
   void handleEscape();
@@ -631,7 +680,43 @@ private:
   void dismissOcrOverlay();
   void paintOcrOverlay(QPainter &painter, const QRectF &image, qreal scale);
   void setStatus(QString status);
-  [[nodiscard]] QRegion pointerMotionRegion(const QPointF &point) const;
+  /** Default-layer annotations as the edit view shows them right now. */
+  struct LiveLayers {
+    /// Committed layers, minus the one being typed into, plus `preview`.
+    QVector<Annotation> annotations;
+    /// Index of the layer in progress (a dragged-out shape or the counter
+    /// ghost), or -1.
+    int preview = -1;
+    /// A drag or an off-canvas ghost may show layers past the settled canvas.
+    bool carried = false;
+  };
+  /** What paintEdit() draws for the pointer at `pointer`; pointer damage
+   *  reads the same layers so the two cannot drift apart. */
+  [[nodiscard]] LiveLayers liveLayers(const QPointF &pointer) const;
+  /** What paintEdit() fills beyond the layers themselves. */
+  struct LiveCanvas {
+    /// The settled canvas, or the bounds a carried layer would settle to.
+    QRectF rect;
+    /// `rect` is such a preview: the mat is laid over it, filled with
+    /// `backdrop`, instead of over the settled canvas while the layer is
+    /// carried, whether that makes the mat larger or smaller.
+    bool previews = false;
+    BackgroundStyle backdrop = BackgroundStyle::None;
+    /// A spotlight has an opening in `rect`, so all the rest of it is dimmed.
+    bool dimmed = false;
+    bool operator==(const LiveCanvas &) const = default;
+  };
+  [[nodiscard]] LiveCanvas liveCanvas(const LiveLayers &live) const;
+  /** The text layer the inline editor would commit right now, laid out as
+   *  its cream pill shows it. Only meaningful while textEditing(). */
+  [[nodiscard]] Annotation draftTextAnnotation() const;
+  /** Pixels that depend on the pointer at `point`. `canvas`, when given,
+   *  receives liveCanvas() for the same state. */
+  [[nodiscard]] QRegion pointerMotionRegion(const QPointF &point,
+                                            LiveCanvas *canvas = nullptr) const;
+  /** Pixels repainted when the live canvas changes between two states. */
+  [[nodiscard]] QRegion liveCanvasDamage(const LiveCanvas &before,
+                                         const LiveCanvas &after) const;
   [[nodiscard]] QRegion windowHoverDamage(int oldIndex, int newIndex) const;
   void queuePointerRepaint(const QRegion &damage);
   void toggleShapeFill();
@@ -662,6 +747,7 @@ private:
   QSize pristineLogicalSize_;
   QVector<CutOp> cuts_;
   bool windowedPresentation_ = false;
+  ShortcutGuide *shortcutGuide_ = nullptr;
   std::function<bool(const QString &, const QStringList &)> processLauncher_;
   bool windowedHandoffOnEdit_ = false;
   bool windowedBackdropOpaque_ = true;
@@ -685,6 +771,7 @@ private:
   /// Coordinate space used by the capture being edited.
   CaptureMode editedMode_ = CaptureMode::Region;
   std::optional<RecentSnap> editingRecent_;
+  QString recentId_;
   QVector<RecentSnap> recents_;
   QFutureWatcher<QVector<RecentSnap>> recentsWatcher_;
   bool recentsLoading_ = false;
@@ -702,6 +789,7 @@ private:
   QRectF canvasRect_;
   QPointF dragStart_;
   QRectF originalSelection_;
+  /// Source frame at crop press, anchoring pointer mapping and live painting.
   QRectF cropDragImageRect_;
   QRectF marqueeRect_;
   QPointF cursor_;
@@ -751,6 +839,8 @@ private:
   /// pointer, or the whole monitor when no window is there.
   bool smartMode_ = false;
   bool windowMode_ = false;
+  /// Index into the region aspects Tab cycles: free, 1:1, 3:4, 16:9.
+  int regionAspect_ = 0;
   BackgroundStyle backgroundStyle_ = BackgroundStyle::None;
   bool imageShadow_ = true;
   CanvasBoundaryMode canvasBoundaryMode_ = CanvasBoundaryMode::Framed;
@@ -807,8 +897,9 @@ private:
   QImage redactionBase_;
   QSize redactionBaseSize_;
   bool redactionBaseStale_ = true;
-  // Select-phase capture scaled and dimmed once per source, widget size, and DPR.
+  // Select-phase capture scaled and dimmed once per source, size, DPR, and theme.
   QPixmap dimmedBackdrop_;
+  QColor backdropScrim_;
   QSize backdropSize_;
   qreal backdropRatio_ = 0.0;
   qint64 backdropKey_ = 0;
@@ -822,6 +913,8 @@ private:
   bool snapshotOutputRequested_ = false;
   bool suppressSnapshots_ = false;
   bool sourceWritten_ = false;
+  // Pristine image owned by the in-flight or last snapshot write.
+  qint64 snapshotSourceKey_ = 0;
   // Background monitor capture fed to CaptureEditor::CaptureMode dispatch.
   struct CaptureJob {
     bool ok = false;
@@ -856,6 +949,9 @@ private:
   QString snapshotPath_;
   std::shared_ptr<PinSnapshotFile> pinDocument_;
   QuickOutputMode quickOutputMode_ = QuickOutputMode::None;
+  // E/A can temporarily replace automatic output with annotation, then
+  // restore the original destination (including explicit --copy/--save).
+  QuickOutputMode captureOutputBeforeEdit_ = QuickOutputMode::CopyAndPreview;
   QString status_ = QStringLiteral("Drag to select an area");
   InlineTextEdit *textEditor_ = nullptr;
   QPointF textPoint_;
@@ -890,6 +986,12 @@ private:
   QColor textColor_;
   QFutureWatcher<OcrResult> ocrWatcher_;
   QFutureWatcher<FinishResult> finishWatcher_;
+  bool saveAsActive_ = false;
+  quint64 saveAsRequest_ = 0;
+  QPointer<QFileDialog> saveAsDialog_;
+  QString saveAsDirectory_;
+  QFuture<QString> saveAsFuture_;
+  QFuture<QString> dismissFuture_;
   QFutureWatcher<ReopenResult> reopenWatcher_;
   QFutureWatcher<QImage> backdropWatcher_;
   bool reopenPending_ = false;

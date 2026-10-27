@@ -2,7 +2,10 @@
 #include "pin-layout.hpp"
 
 #include <QJsonArray>
+#include <QImage>
+#include <QRect>
 #include <QTransform>
+#include <Qt>
 #include <QtNumeric>
 #include <QtTypes>
 #include <QtMath>
@@ -19,6 +22,24 @@ QSize pinFrameSize(const QSize &screenSize) {
   const int height = std::clamp(static_cast<int>(std::lround(width * aspect)),
                                 width / 4, width * 2);
   return {width, height};
+}
+
+QImage pinDisplayImage(const QImage &image) {
+  if (image.isNull())
+    return {};
+  // Cards cover their frame, centered horizontally and aligned at the top.
+  // Nothing beyond these extremes can appear in the 200x50..400 frame.
+  // Crop that invisible area first so a long scroll keeps sharp top pixels.
+  const int width = static_cast<int>(std::min(qint64(image.width()),
+                                             qint64(image.height()) * 4));
+  const int height = static_cast<int>(std::min(qint64(image.height()),
+                                              qint64(image.width()) * 2));
+  const QRect crop((image.width() - width) / 2, 0, width, height);
+  const QImage visible = crop == image.rect() ? image : image.copy(crop);
+  // Four device pixels per logical pixel, without upscaling small captures.
+  return width <= 800 && height <= 1600
+             ? visible
+             : visible.scaled(800, 1600, Qt::KeepAspectRatio, Qt::SmoothTransformation);
 }
 
 QRect pinVisibleRect(const QRect &rect, const QRect &screen, int margin) {
@@ -379,6 +400,8 @@ QRectF pinControlRect(const QSize &frame, int index) {
     return {inset, inset, dragWidth, size};
   case 5: // Pin
     return {right - size - gap, inset, size, size};
+  case 6: // Show in folder, beside Copy path
+    return {inset + dragWidth + size + gap * 2, inset, size, size};
   default:
     return {};
   }
@@ -390,11 +413,13 @@ QString pinControlTip(int index, bool kept) {
     return QStringLiteral("Close · X / Super+W / Esc / middle-click");
   case 2:
     return QStringLiteral("Copy saved file path · L / F");
+  case 6:
+    return QStringLiteral("Show in folder · R");
   case 4:
     return QStringLiteral("Drag this image out");
   case 5:
-    return kept ? QStringLiteral("Unpin · Ctrl+P · fade after 10 seconds")
-                 : QStringLiteral("Keep on screen · Ctrl+P");
+    return kept ? QStringLiteral("Unpin · T / Ctrl+P · fade after 7 seconds")
+                 : QStringLiteral("Keep on screen · T / Ctrl+P");
   default:
     return {};
   }

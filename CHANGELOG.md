@@ -5,6 +5,148 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ## Unreleased
 
+## 1.24.0
+
+### Changed
+
+- Closing the shortcuts card hides it entirely instead of leaving a Shortcuts pill, and it stays closed for later captures. `?` brings it back.
+- Capture previews and `--notify` notifications fade after 7 seconds of idle time instead of 10.
+
+### Fixed
+
+- Edit on a preview or pin opens the editor on the monitor showing that preview, not the primary one.
+
+## 1.23.0
+
+### Added
+
+- `--notify` announces saved captures in a notification with the capture's
+  thumbnail and size and **Open** and **Edit** buttons, like Omarchy's saved
+  screen recordings, instead of a timed preview, worded in Omarchy's language
+  through `omarchy-i18n`. It covers fresh and scroll
+  captures and saving from the editor or Save As. Omarchy passes it once its
+  `omarchy-notification-send` takes `--action` buttons.
+
+## 1.22.0
+
+### Added
+
+- Hold `Ctrl` while dragging with Cut (`X`) to insert a transparent band.
+  Annotations shift with the image, and insertion supports undo and redo.
+
+- `Tab` cycles region selection between free, square, 3:4, and 16:9 while
+  capturing; `Shift+Tab` cycles back. The capture guide shows the active aspect.
+
+- Fresh captures save automatically without losing the clipboard copy or timed
+  preview. Set `[output] autosave = false` to opt out. Saved files survive preview
+  expiry, and explicit copy-only output remains copy-only.
+
+- Save As (`Ctrl+Shift+S`): choose a PNG destination.
+  The chooser follows the active theme, remembers its folder during editing,
+  and saves lossless PNGs atomically on a worker.
+  It opens centered without rearranging the desktop and retains editable layers
+  in recent captures. Save, Save As, and Copy + Save close the editor after success
+  and replace its originating preview or pin with a fresh unpinned preview.
+  Reveal and Copy path use the saved PNG without creating another file.
+  Closing during preparation or chooser cancellation cannot reopen the editor;
+  unfinished drawing gestures and initial backdrop loading finish before saving.
+  Explicit non-PNG filenames are rejected without changing the draft or file.
+- A folder button beside each preview or pin's link-copy button, plus `R` while
+  hovered, to save the shot if needed and reveal it in the default file browser.
+- A readable shortcuts card above the capture/editor canvas. Press `?` or click
+  its header to collapse it; scroll the card when the screen is too short.
+- Press `E` (edit) or `A` (annotate) in the capture picker to toggle keeping
+  the annotator open after capture, including scrolling captures.
+- Press `T` ("tack") while hovering a preview to pin or unpin it, alongside
+  the pin button and `Ctrl+P`. The editor keeps `T` for Text.
+
+### Changed
+
+- Remember the latest five completed captures even after their previews expire,
+  without requiring annotation, copying, saving, or pinning. Recent cards always
+  reopen for annotation, and further edits update the same entry.
+- Keep a subtle dotted image boundary visible with every tool, with crop handles
+  available only in Select mode when no annotation is selected.
+- Framed canvas growth keeps 15 px of mat beyond a layer that outgrows the
+  normal frame, so an arrow or label no longer ends flush against the edge.
+- A label typed outside the image grows the canvas as soon as its caret is
+  placed there and keeps pace with the text, instead of flashing away when the
+  placing click ends and only returning on commit.
+- Canvas growth is live in both directions: the mat and card shadow follow a
+  layer as it is drawn or carried past the image edge, and give way again as
+  it is carried back, instead of settling on release. Framed previews its
+  window-gray frame the way Overflow previews its tight bounds.
+- Keep a preview pinned once it is dragged, whether reordering the stack or
+  moving it elsewhere on screen, including Super+left-drag.
+- Use the active window-border color for the pin icon while a preview is pinned.
+- Match pins, editor controls, tooltips, window-selection highlights, and crop
+  outlines to Omarchy's theme files, with live updates when the theme changes.
+- Hide the cursor and drag handles while placing arrow heads, tails, bends, and
+  line endpoints; restore them on release or cancellation.
+
+### Fixed
+
+- Run OCR's tesseract on one thread. Its OpenMP pool spun on every core and
+  made text grabs slower, not faster: a full-screen read drops from about
+  1.7 s to 1.0 s with a third of the CPU time, and reads the same text.
+- Open the editor on the preview's current monitor instead of falling back to
+  the primary display when editing a preview or pinned capture.
+- Retain logical display dimensions inside exported PNGs, so captures from
+  scaled monitors reopen at the correct size from Omaroll, files, or the
+  clipboard without downsampling or slowing the fast PNG encoder.
+- Remove the screen-share exclusion rule from the recommended Hyprland setup.
+  It blacks out the scrolling capture region, including its transparent hole.
+- Report a missing preview image when copying instead of using its smaller
+  display thumbnail as the screenshot.
+- Speed up lossless PNG output and load a small display image for the corner
+  preview, removing the multi-second encoding delay on large monitors while
+  keeping full-resolution pixels for copying, saving, dragging, and editing.
+- Cancelling automatic scroll capture interrupts frame-settling retries instead
+  of waiting several seconds for the retry window to expire.
+- Ignore delayed starts and queued status updates from stopped scrolling
+  captures when switching modes or choosing a new region.
+- Keep auto-scroll Start and Continue responsive while injection backends are
+  probed, and cancel pending setup when leaving the capture.
+- Preserve pristine working pixels and the final operation log when recent
+  publication fails after output. Pending autosaves cannot substitute pixels
+  from an earlier document, and output waits for gestures and default backdrops.
+  Drain persistence workers without re-entering GUI callbacks during teardown.
+  Replace reopened shelf entries before pruning unrelated captures.
+- Show the corner preview and dismiss the overlay before saving the full-resolution
+  recent document, removing the extra history-compression pause after capture.
+- Preserve image proportions when reopening a pin or preview whose backdrop
+  or annotations expanded the original capture.
+- Extend spotlight dimming across the live canvas while typing text outside
+  it, without waiting for the text to be committed.
+- A long label being typed can no longer end up shifted sideways with the
+  start of every line cut off. Its box is always sized to the text, yet a
+  sideways touchpad swipe over it, or Qt centring the caret at the end of a
+  full line, could scroll it, and nothing scrolled it back until commit.
+- A spotlight on a grown canvas no longer recomposes that whole canvas on
+  every repaint, pointer hover included: only the patch its lens magnifies is
+  composed, which takes a 6K drag from 37 ms a frame to under 5.
+- Moving or drawing a layer no longer leaves torn outlines, stale selection
+  handles, or a stepped block of dimming or backdrop behind it. Dragging out a
+  spotlight, hollow ellipses, selected pen and highlighter strokes, layers
+  carried past the image edge in Overflow, and any layer carried past the edge
+  while a spotlight is on the canvas all repaint completely.
+- Show capture crosshair guides and the correct hovered window on pointer entry,
+  without waiting for the first mouse movement.
+- Keep dashed selection outlines stable during partial repaints, including
+  narrow rounded rectangles and scaled displays.
+- Match the editor's background padding, image corners, and scaled shadows to
+  saved captures, and fit the complete background frame in the preview.
+- Keep previews and pins frameless at the compositor level across theme changes,
+  preventing a second outline around the frame Omasnap draws.
+- Suppress the armed tool while moving or resizing an annotation, including
+  the cut-band preview, and keep that tool ready for the next canvas gesture.
+- Keep screenshot content anchored while dragging crop handles, then re-center
+  the image on release.
+- Preserve the editor's keyboard focus when late pointer events arrive from a
+  dismissed scrolling panel.
+- Keep the scrolling overlay eligible for keyboard focus after releasing its
+  exclusive grab, so Escape remains available when the overlay has focus.
+
 ## 1.21.0
 
 ### Added
@@ -100,7 +242,10 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 - Keep the toolbar, capture tabs, hotkey legend, and canvas geometry aligned.
 - Remove the pixels actually covered by a cut-band drag.
 
-[Unreleased changes](https://github.com/omacom/omasnap/compare/v1.21.0...main)
+[Unreleased changes](https://github.com/omacom/omasnap/compare/v1.24.0...main)
+· [1.24.0 changes](https://github.com/omacom/omasnap/compare/v1.23.0...v1.24.0)
+· [1.23.0 changes](https://github.com/omacom/omasnap/compare/v1.22.0...v1.23.0)
+· [1.22.0 changes](https://github.com/omacom/omasnap/compare/v1.21.0...v1.22.0)
 · [1.21.0 changes](https://github.com/omacom/omasnap/compare/v1.20.1...v1.21.0)
 · [1.20.1 changes](https://github.com/omacom/omasnap/compare/v1.20.0...v1.20.1)
 · [1.20.0 changes](https://github.com/omacom/omasnap/compare/v1.19.1...v1.20.0)

@@ -149,6 +149,11 @@ struct OperationLog {
   /// coordinates live in that space, so a source captured on a scaled
   /// monitor reopens at the same scale. Invalid when unknown.
   QSize previewSize;
+  /// Identity shared by a capture's recent entry, preview, and editor handoffs.
+  QString recentId = {};
+  /// Durable PNG represented by a rendered preview. A returned pin document
+  /// sets this only after its replacement saved preview has been launched.
+  QString savedPath = {};
 
   bool operator==(const OperationLog &) const = default;
 };
@@ -209,6 +214,20 @@ inline constexpr qreal kMinimumTextWrapWidth = 48.0;
                                               qreal canvasWidth = 0.0);
 [[nodiscard]] QRectF annotationTextBounds(const Annotation &annotation,
                                           qreal canvasWidth = 0.0);
+/** Whether a spotlight has an opening inside `bounds`. The first one that
+ *  does dims everything else there, so it changes far more than its own
+ *  rectangle. */
+[[nodiscard]] bool spotlightOpens(const Annotation &annotation,
+                                  const QRectF &bounds);
+/** Width of the pen a layer's outline is stroked with; 0 when it has none. */
+[[nodiscard]] qreal annotationPenWidth(const Annotation &annotation);
+/**
+ * Extent of everything a layer paints, in annotation space, antialiasing
+ * included. Canvas growth and the editor's repaint damage both read it, so a
+ * layer can never paint outside what either of them allows for. Empty for a
+ * redaction, which only ever replaces source pixels.
+ */
+[[nodiscard]] QRectF annotationPaintedBounds(const Annotation &annotation);
 /**
  * Pixel-aligned annotation space selected by `boundaryMode`. Grow contains
  * every painted extent, Frame stops at the normal backdrop frame, and Image
@@ -260,9 +279,8 @@ private:
 [[nodiscard]] bool loadOperationLog(const QString &path, OperationLog &log,
                                     QString &error);
 [[nodiscard]] QString temporaryExportPath();
-/** Presents a loaded image as the thing being edited. A log written by the
- *  editor carries the logical size its ops were laid out in; a source taken
- *  on a scaled monitor then opens at that scale rather than at 1:1. */
+/** Restore a document's logical size from its operation log or, for flattened
+ *  exports, its PNG metadata. Untagged images use their pixel dimensions. */
 void describeFileCapture(CaptureData &capture, QImage image,
                          const OperationLog &log);
 /** Maps logical selection bounds to the measured native capture pixels. */
@@ -281,6 +299,10 @@ void describeFileCapture(CaptureData &capture, QImage image,
                                    CanvasBoundaryMode boundaryMode =
                                        CanvasBoundaryMode::Framed,
                                    const QImage &customBackdrop = {});
+/** Logical size of a flattened render, including backdrop and canvas growth,
+ *  using the same pixel scale as renderCapture. */
+[[nodiscard]] QSize renderedCaptureLogicalSize(const CaptureData &capture,
+                                                const QSize &renderedSize);
 /** Lowercase serialization name ("aurora", "custom", ...) for a backdrop
  *  style, used in the operation log and the `[background] default` config
  *  key. */
@@ -294,8 +316,8 @@ void describeFileCapture(CaptureData &capture, QImage image,
 [[nodiscard]] bool loadClipboardImage(QImage &image, QString &error);
 [[nodiscard]] bool copyPngFileToClipboard(const QString &path, QString &error);
 [[nodiscard]] bool copyImageToClipboard(const QImage &image, QString &error);
-[[nodiscard]] bool quickOutput(const QImage &image, QuickOutputMode mode,
-                               QString &error);
+[[nodiscard]] bool quickOutput(QImage image, QuickOutputMode mode,
+                               QString &error, const QSize &logicalSize = {});
 [[nodiscard]] bool copyTextToClipboard(const QString &text, QString &error);
 /** Paints one annotation. `arrowDisplayScale` affects only the on-screen tail
  *  legibility floor for Standard/Pointy arrows; exports use the default 1.0. */
@@ -313,18 +335,38 @@ void paintAnnotation(QPainter &painter, const Annotation &annotation,
                                       const QPointF &point,
                                       qreal tolerance = 0.0);
 [[nodiscard]] QPainterPath spotlightPath(const Annotation &annotation);
+/**
+ * Pixels of a composed canvas that the spotlights among `annotations`
+ * magnify, when all of that canvas (`sourceRect`) maps onto `targetBounds`.
+ * Lenses read a fraction of their own area, so a caller that composes the
+ * canvas on every paint needs only this much of it. Null when none opens.
+ */
+[[nodiscard]] QRectF spotlightSampleBounds(const QVector<Annotation> &annotations,
+                                           const QRectF &targetBounds,
+                                           const QRectF &sourceRect);
+/** `sourceRect` is the whole composed canvas in source pixels. `source` holds
+ *  all of it, or only the part that starts at `sourceOrigin` within it. */
 void paintSpotlights(QPainter &painter, const QImage &source,
                      const QRectF &targetBounds, const QRectF &sourceRect,
-                     const QVector<Annotation> &annotations);
+                     const QVector<Annotation> &annotations,
+                     const QPoint &sourceOrigin = {});
 /**
  * Paints the default annotation layer (spotlights, then vectors) in selection
  * space. Spotlights sample `redacted`, which must already include the
- * redaction layer so a loupe cannot magnify source pixels.
+ * redaction layer so a loupe cannot magnify source pixels. A null
+ * `sourceRect` means `redacted` is the whole canvas; otherwise the two follow
+ * paintSpotlights().
  */
 void paintDefaultLayer(QPainter &painter, const QImage &redacted,
                        const QRectF &logicalBounds,
                        const QVector<Annotation> &annotations,
-                       qreal arrowDisplayScale = 1.0);
+                       qreal arrowDisplayScale = 1.0,
+                       const QRectF &sourceRect = {},
+                       const QPoint &sourceOrigin = {});
+// Logical image-frame dimensions, shared by the editor and native-pixel export.
+inline constexpr qreal kBackdropMargin = 64.0;
+inline constexpr qreal kCaptureImageRadius = 14.0;
+
 /** `customBackdrop` is the image drawn (cover-fit) for
  *  `BackgroundStyle::Custom`; a null image there paints nothing, same as
  *  `BackgroundStyle::None`. */
@@ -365,6 +407,13 @@ QImage applyRedactionsScaled(QImage image, const QVector<Annotation> &redactions
  */
 [[nodiscard]] QString dominantAppClass(const QVector<WindowTarget> &windows,
                                        const QRectF &selection);
+/** Suggested PNG destination from output config, without creating files.
+ * Reads config: call on a worker. */
+[[nodiscard]] QString suggestedScreenshotPath(const QString &appSlug = {});
+/** Atomically saves flattened PNG pixels, preserving an existing file on
+ * failure. PNG encoding and disk I/O must run on a worker. */
+[[nodiscard]] bool savePngFile(const QImage &image, const QString &path,
+                              QString &error);
 /**
  * Moves a finished export into the screenshots directory as
  * `screenshot-<yyyy-MM-dd_HH-mm-ss>[-<appSlug>].png`. The date leads so the
@@ -396,30 +445,39 @@ bool removeEditorHandoff(const QString &path, const QString &token);
 [[nodiscard]] QSize editorWindowSize(const QSize &preview,
                                      const QSize &available,
                                      int legendHeight);
-/**
- * Writes `image` into the private runtime directory. `quality` is the Qt PNG
- * quality knob, which maps inversely onto zlib levels: -1 keeps the default
- * level, higher values compress less and encode faster.
- */
 /** Saves a pinned snapshot plus a sidecar log recording the logical size,
  *  so editing the pin later reopens at the captured scale. */
-[[nodiscard]] bool savePinnedSnapshot(const QImage &image, const QString &path,
-                                      const QSize &logicalSize, QString &error);
+[[nodiscard]] bool savePinnedSnapshot(QImage image, const QString &path,
+                                      const QSize &logicalSize, QString &error,
+                                      const QString &recentId = {},
+                                      const QString &savedPath = {});
 /** Saves and launches a private pin, optionally copying the same PNG first.
  *  Call on a worker: encoding, clipboard verification and process launch block.
  *  Returns the owned snapshot path, or removes it on failure. */
 [[nodiscard]] QString launchPinnedCapture(
     const QImage &image, const QSize &logicalSize, bool copy,
     PinLifetime lifetime, QString &error,
-    const std::function<bool(const QString &, const QStringList &)> &launcher = {});
+    const std::function<bool(const QString &, const QStringList &)> &launcher = {},
+    const QString &recentId = {}, const QString &savedPath = {});
+/** Atomically writes a lossless PNG into the private runtime directory. */
 [[nodiscard]] bool saveTemporarySnapshot(const QImage &image, QString path,
-                                         QString &error, int quality = -1);
+                                         QString &error);
 [[nodiscard]] QString recognizeText(const QImage &image, QString &error);
+/** Whether saved captures are announced in a notification instead of a timed
+ *  preview: set by --notify and inherited by the pins and editors that
+ *  process starts. On Sway the notification comes from notify-send and has
+ *  no Open or Edit button. */
+[[nodiscard]] bool notifySavedCaptures();
 /** Builds the freedesktop `notify-send` argv. Every value is a separate word
  *  with no shell parsing. A saved image travels as one `image-path` hint word.
- *  `notify-send` has no click command, so there is no reopen action. */
+ *  `notify-send` has no click command, so there is no reopen action. A toast
+ *  (--notify with a saved image) stays up for 7 s, other notices for 4.5 s. */
 [[nodiscard]] QStringList
 captureNotificationArguments(const QString &message,
-                             const QString &imagePath = {});
-void sendCaptureNotification(const QString &message,
-                             const QString &imagePath = {});
+                             const QString &imagePath = {}, bool toast = false);
+/** Starts notify-send through the launcher when one is given. recentId is
+ *  accepted for upstream's callers; notify-send has no Edit button to use it. */
+void sendCaptureNotification(
+    const QString &message, const QString &imagePath = {},
+    const QString &recentId = {},
+    const std::function<bool(const QString &, const QStringList &)> &launcher = {});

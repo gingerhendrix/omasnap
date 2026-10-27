@@ -21,6 +21,10 @@ fork. It replaces the Hyprland integration and does not keep both.
   pin never takes focus. The stack's work area is the visible workspace
   rectangle, so bars on any edge are respected.
 - Notifications use freedesktop `notify-send` with an image hint.
+  `--notify` replaces the timed preview with a 7 s notification, but
+  `notify-send` gets no Open or Edit button.
+- Chrome colors read Omarchy theme files when they exist and otherwise use
+  the built-in palette.
 
 ## Known differences from upstream on Hyprland
 
