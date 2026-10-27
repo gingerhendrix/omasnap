@@ -1,10 +1,14 @@
 /** @fileoverview Implements the Sway IPC helpers declared in sway-ipc.hpp. */
 #include "sway-ipc.hpp"
 
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QSaveFile>
 
 namespace {
 
@@ -98,4 +102,33 @@ QVector<SwayWindow> parseSwayWindows(const QByteArray &tree) {
 QVector<SwayWindow> swayWindows() {
   return parseSwayWindows(swaymsgOutput(
       {QStringLiteral("-t"), QStringLiteral("get_tree")}));
+}
+
+bool registerSwayRulesOnce(const QString &name, const QStringList &commands,
+                           const QString &runtimeDirectory) {
+  const QByteArray socket = qgetenv("SWAYSOCK");
+  if (socket.isEmpty() || runtimeDirectory.isEmpty())
+    return false;
+  const QString stamp = QDir(runtimeDirectory).filePath(
+      QStringLiteral("sway-%1-%2")
+          .arg(name,
+               QString::fromLatin1(
+                   QCryptographicHash::hash(socket, QCryptographicHash::Sha1)
+                       .toHex()
+                       .left(16))));
+  if (QFileInfo::exists(stamp))
+    return true;
+  for (const QString &command : commands) {
+    if (!swayCommand(command))
+      return false;
+  }
+  QSaveFile file(stamp);
+  return file.open(QIODevice::WriteOnly) && file.commit();
+}
+
+QStringList swaySaveAsRuleCommands() {
+  // Over IPC Sway splits for_window's body at commas unless it is quoted.
+  return {QStringLiteral(
+      "for_window [app_id=\"^omasnap$\" title=\"^Save screenshot as$\"] "
+      "\"floating enable, move position center\"")};
 }

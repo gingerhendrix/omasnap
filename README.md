@@ -120,6 +120,8 @@ Pins and the windowed editor are ordinary Sway windows, placed through `swaymsg`
   but they can take focus when created until the next Sway session.
 - The windowed editor is floated, sized, and centered after it maps. It can show
   tiled for one frame.
+- The Save As chooser floats and centers through one more `for_window` rule, also
+  registered once per Sway session.
 - Auto scroll capture always uses the wlr virtual pointer. Sway applies natural
   scrolling per input device, so the policy for an injected uinput mouse is unknown.
 

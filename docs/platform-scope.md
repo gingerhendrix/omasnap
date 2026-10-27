@@ -20,6 +20,9 @@ fork. It replaces the Hyprland integration and does not keep both.
   quoted `for_window` rule are registered once per Sway session so a new
   pin never takes focus. The stack's work area is the visible workspace
   rectangle, so bars on any edge are respected.
+- The Save As chooser floats and centers through one quoted `for_window`
+  rule, also registered once per Sway session
+  (`src/editor-save-as.cpp`, `src/sway-ipc.cpp`).
 - Notifications use freedesktop `notify-send` with an image hint.
   `--notify` replaces the timed preview with a 7 s notification, but
   `notify-send` gets no Open or Edit button.

@@ -1,6 +1,7 @@
-/** @fileoverview Sway IPC helpers for pinned windows and the windowed editor:
- *  a bounded `swaymsg` runner, command-reply checks, and a flat view list
- *  parsed from `get_tree`. */
+/** @fileoverview Sway IPC helpers for pinned windows, the windowed editor, and
+ *  the Save As chooser: a bounded `swaymsg` runner, command-reply checks,
+ *  once-per-session rule registration, and a flat view list parsed from
+ *  `get_tree`. */
 #pragma once
 
 #include <QByteArray>
@@ -44,3 +45,16 @@ struct SwayWindow {
 
 /// Reads the live Sway tree. Empty when Sway cannot be asked.
 [[nodiscard]] QVector<SwayWindow> swayWindows();
+
+/// Registers rules once per Sway instance. Sway rules have no names and
+/// cannot be withdrawn, so each call would add another copy. A stamp file
+/// `sway-<name>-<hash of SWAYSOCK>` in runtimeDirectory records that this
+/// instance already has them, so a new Sway session registers again. False
+/// when SWAYSOCK or runtimeDirectory is empty, or when a command fails.
+[[nodiscard]] bool registerSwayRulesOnce(const QString &name,
+                                         const QStringList &commands,
+                                         const QString &runtimeDirectory);
+
+/// The rule that floats and centers the Save As chooser. The overlay editor
+/// is a layer surface, so the chooser has no xdg-shell parent and would tile.
+[[nodiscard]] QStringList swaySaveAsRuleCommands();

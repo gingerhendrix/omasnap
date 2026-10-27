@@ -3,8 +3,13 @@
 
 #include "card-stack.hpp"
 #include "pin-layout.hpp"
+#include "sway-ipc.hpp"
 #include "cli-path.hpp"
 #include <QCommandLineParser>
+#include <QDir>
+#include <QFile>
+#include <QScopeGuard>
+#include <QTemporaryDir>
 #include <QJsonArray>
 #include <QImage>
 #include <QRectF>
@@ -502,6 +507,64 @@ bool runPinLayoutSmoke(QString &error) {
     error = QStringLiteral("Sway pin rules were malformed: %1")
                 .arg(rules.join(QStringLiteral(" | ")));
     return false;
+  }
+  // The Save As chooser has no xdg-shell parent from the overlay editor.
+  // Its rule body must be quoted for the same reason as the pin rule.
+  const QStringList saveAs = swaySaveAsRuleCommands();
+  if (saveAs != QStringList{QStringLiteral(
+          "for_window [app_id=\"^omasnap$\" title=\"^Save screenshot as$\"] "
+          "\"floating enable, move position center\"")}) {
+    error = QStringLiteral("Sway Save As rule was malformed: %1")
+                .arg(saveAs.join(QStringLiteral(" | ")));
+    return false;
+  }
+  // Rules register once per Sway instance: a second call with the same
+  // SWAYSOCK sends nothing, and a new session registers again.
+  {
+    QTemporaryDir fixture;
+    QFile swaymsg(QDir(fixture.path()).filePath(QStringLiteral("swaymsg")));
+    if (!fixture.isValid() || !swaymsg.open(QIODevice::WriteOnly) ||
+        swaymsg.write("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"${0%/*}/sent\"\n"
+                      "printf '[{\"success\": true}]'\n") < 0 ||
+        !swaymsg.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                QFileDevice::ExeOwner)) {
+      error = QStringLiteral("Could not prepare the Sway rule fixture");
+      return false;
+    }
+    swaymsg.close();
+    const QByteArray oldPath = qgetenv("PATH");
+    const QByteArray oldSocket = qgetenv("SWAYSOCK");
+    const auto restore = qScopeGuard([&] {
+      qputenv("PATH", oldPath);
+      oldSocket.isNull() ? qunsetenv("SWAYSOCK") : qputenv("SWAYSOCK", oldSocket);
+    });
+    qputenv("PATH", fixture.path().toUtf8() + ':' + oldPath);
+    const auto sent = [&] {
+      QFile file(QDir(fixture.path()).filePath(QStringLiteral("sent")));
+      return file.open(QIODevice::ReadOnly)
+                 ? QString::fromUtf8(file.readAll()).split(QLatin1Char('\n'),
+                                                           Qt::SkipEmptyParts)
+                 : QStringList();
+    };
+    qunsetenv("SWAYSOCK");
+    const bool withoutSway =
+        registerSwayRulesOnce(QStringLiteral("save-as-rule"), saveAs, fixture.path());
+    qputenv("SWAYSOCK", "/tmp/omasnap-test-sway-a.sock");
+    const bool first =
+        registerSwayRulesOnce(QStringLiteral("save-as-rule"), saveAs, fixture.path());
+    const bool second =
+        registerSwayRulesOnce(QStringLiteral("save-as-rule"), saveAs, fixture.path());
+    const qsizetype afterOneSession = sent().size();
+    qputenv("SWAYSOCK", "/tmp/omasnap-test-sway-b.sock");
+    const bool nextSession =
+        registerSwayRulesOnce(QStringLiteral("save-as-rule"), saveAs, fixture.path());
+    if (withoutSway || !first || !second || !nextSession || afterOneSession != 1 ||
+        sent().size() != 2 ||
+        sent().constFirst() != QStringLiteral("-r -- ") + saveAs.constFirst()) {
+      error = QStringLiteral("Sway rules did not register once per session: %1")
+                  .arg(sent().join(QStringLiteral(" | ")));
+      return false;
+    }
   }
   QVector<QRect> occupied;
   const QSize wide(2400, 110);

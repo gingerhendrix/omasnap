@@ -19,7 +19,6 @@
 
 #include <QApplication>
 #include <QBuffer>
-#include <QCryptographicHash>
 #include <QDir>
 #include <QDrag>
 #include <QFile>
@@ -182,29 +181,12 @@ bool revealFileInFolder(const QString &path, QString &error) {
 
 bool swayDispatch(const QString &command) { return swayCommand(command); }
 
-// Sway rules are not named, so they cannot be replaced, and each call adds
-// another copy. Register them once per Sway instance. SWAYSOCK names the
-// compositor process, so a new session registers again. A `swaymsg reload`
-// drops runtime rules; the placement pass still floats and sticks each pin.
+// Register the pin rules once per Sway instance (see registerSwayRulesOnce).
+// A `swaymsg reload` drops runtime rules; the placement pass still floats and
+// sticks each pin.
 bool registerSwayPinRules() {
-  const QByteArray socket = qgetenv("SWAYSOCK");
-  const QString runtime = secureRuntimeDirectory();
-  if (socket.isEmpty() || runtime.isEmpty())
-    return false;
-  const QString stamp = QDir(runtime).filePath(
-      QStringLiteral("sway-pin-rules-%1")
-          .arg(QString::fromLatin1(
-              QCryptographicHash::hash(socket, QCryptographicHash::Sha1)
-                  .toHex()
-                  .left(16))));
-  if (QFileInfo::exists(stamp))
-    return true;
-  for (const QString &command : pinRuleCommands()) {
-    if (!swayCommand(command))
-      return false;
-  }
-  QSaveFile file(stamp);
-  return file.open(QIODevice::WriteOnly) && file.commit();
+  return registerSwayRulesOnce(QStringLiteral("pin-rules"), pinRuleCommands(),
+                               secureRuntimeDirectory());
 }
 
 struct CompositorMonitor {

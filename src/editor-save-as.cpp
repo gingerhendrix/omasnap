@@ -5,6 +5,7 @@
 #include "pin.hpp"
 #include "recent-snaps.hpp"
 #include "pin-file.hpp"
+#include "sway-ipc.hpp"
 
 #include <LayerShellQt/Window>
 #include <QDialog>
@@ -14,7 +15,6 @@
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QObject>
-#include <QProcess>
 #include <QPromise>
 #include <QString>
 #include <QTimer>
@@ -26,24 +26,16 @@
 namespace {
 void prepareSaveAsWindow() {
   // The overlay has no xdg-shell parent for its chooser. Without a rule,
-  // Hyprland tiles the independent dialog and rearranges the user's windows.
+  // Sway tiles the independent dialog and rearranges the user's windows.
   // Register before mapping, on the same worker that prepares the filename.
-  QProcess process;
-  process.start(QStringLiteral("hyprctl"),
-                {QStringLiteral("eval"),
-                 QStringLiteral("hl.window_rule({ name = \"omasnap-save-as\", "
-                                "match = { class = \"^omasnap$\", "
-                                "title = \"^Save screenshot as$\" }, "
-                                "float = true, center = true, opacity = 1 })")});
-  if (!process.waitForFinished(500)) {
-    process.kill();
-    process.waitForFinished(500);
+  // Sway rules cannot be withdrawn, so the rule is registered once per
+  // Sway session. Outside Sway there is nothing to configure.
+  if (qEnvironmentVariableIsEmpty("SWAYSOCK"))
+    return;
+  if (!registerSwayRulesOnce(QStringLiteral("save-as-rule"),
+                             swaySaveAsRuleCommands(),
+                             secureRuntimeDirectory()))
     qWarning("Could not configure the floating Save As window");
-  } else if (process.exitStatus() != QProcess::NormalExit ||
-             process.exitCode() != 0 ||
-             process.readAllStandardOutput().contains("error")) {
-    qWarning("Could not configure the floating Save As window");
-  }
 }
 } // namespace
 
