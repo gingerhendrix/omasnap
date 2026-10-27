@@ -8,13 +8,20 @@ prefix="${OMASNAP_PREFIX:-$HOME/.local}"
 checkout_key="$(printf '%s' "$repo_dir" | sha1sum | cut -c1-12)"
 build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/omasnap-sway/build-$checkout_key"
 
-required=(cmake ninja pkg-config wayland-scanner swaymsg wl-copy wl-paste notify-send tesseract)
+required=(cmake ninja pkg-config wayland-scanner swaymsg wl-copy wl-paste notify-send xdg-open tesseract)
 for command_name in "${required[@]}"; do
   if ! command -v "$command_name" >/dev/null; then
     printf 'install-arch: missing required command: %s\n' "$command_name" >&2
     exit 1
   fi
 done
+
+# v1.22.0 and later encode PNGs with libdeflate. CMake would also fail, but
+# name the Arch package here.
+if ! pkg-config --exists libdeflate; then
+  printf 'install-arch: missing libdeflate (pacman -S libdeflate)\n' >&2
+  exit 1
+fi
 
 cmake -S "$repo_dir" -B "$build_dir" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
