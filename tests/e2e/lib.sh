@@ -219,7 +219,9 @@ e2e_own_pids() {
   for environ in /proc/[0-9]*/environ; do
     pid="${environ#/proc/}"; pid="${pid%/environ}"
     [[ "$pid" == "$$" || "$pid" == "$e2e_sway_pid" ]] && continue
-    tr '\0' '\n' <"$environ" 2>/dev/null | grep -qxF "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" && echo "$pid"
+    # The process can exit between the glob and the read; the braces put
+    # the redirection's own error under 2>/dev/null too.
+    { tr '\0' '\n' <"$environ"; } 2>/dev/null | grep -qxF "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" && echo "$pid"
   done
 }
 
