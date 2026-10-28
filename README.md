@@ -677,6 +677,12 @@ The container comes from `container/Dockerfile`, and CI enters it through `make 
 and `make docker-run`. Run `make docker-check` to get the CI result on your machine. It
 builds in `build-docker/`, so it does not touch a native `build/`.
 
+`make docker-e2e` runs end-to-end scenarios against a private headless Sway in the same
+container: capture, autosave, clipboard, the windowed editor, pins, pin Edit on a second
+output, Save As, notifications, OCR, and manual and automatic scroll capture. Each scenario
+records a video for review in `build-docker/e2e-output/`. CI runs it as a separate job and
+uploads the videos.
+
 ## Acknowledgements
 
 The capture and annotation workflow is inspired by three excellent screenshot tools:

@@ -136,6 +136,22 @@ opens a shell in the image, and `make docker-run CMD='...'` runs one command.
 layer, so refresh a local image with
 `make docker-image DOCKER_BUILD_FLAGS='--pull --no-cache'`.
 
+`make docker-e2e` runs the compositor end-to-end scenarios in `tests/e2e/`
+inside the `e2e` image. Each scenario starts a private headless Sway with two
+outputs (HEADLESS-1 at scale 1.5, HEADLESS-2 at scale 1), drives omasnap with
+`wtype` and the `omasnap-e2e-vptr` virtual pointer, and asserts on `swaymsg`
+replies, files, the clipboard, D-Bus notifications and output pixels. It
+records one `video.mp4` per scenario, with the current step shown in the Sway
+bar, for human review. Results go to `build-docker/e2e-output/`, and
+`summary.md` there lists every scenario. `E2E='pins save-as'` runs a subset,
+`E2E_PACE=0` drops the pauses that make the videos readable, and
+`E2E_RECORD=0` skips recording. `make e2e` runs the same scenarios with the
+tools on the host. It never touches the live session: it unsets `SWAYSOCK`
+and `WAYLAND_DISPLAY` and gives each scenario its own runtime folder and
+D-Bus session bus. Add a scenario as `tests/e2e/scenarios/NN-name.sh` using
+the helpers in `tests/e2e/lib.sh`. Mark a known gap with `e2e_xfail`, which
+records XFAIL and does not fail the run.
+
 Dependencies (Arch): `base-devel cmake ninja pkgconf qt6-base layer-shell-qt
 wayland wayland-protocols libdeflate sway wl-clipboard libnotify xdg-utils
 tesseract tesseract-data-eng`. See
