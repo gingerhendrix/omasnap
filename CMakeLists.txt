@@ -221,6 +221,20 @@ add_test(NAME omasnap-smoke COMMAND omasnap-smoke)
 set_tests_properties(omasnap-smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 
+# Compositor e2e helper (tests/e2e, `make e2e`). Off by default so a normal
+# build stays lean. It reuses the generated virtual-pointer protocol code.
+option(OMASNAP_E2E "Build the headless Sway e2e helpers" OFF)
+if(OMASNAP_E2E)
+  add_executable(omasnap-e2e-vptr
+    tests/e2e/vptr.c
+    "${CMAKE_CURRENT_BINARY_DIR}/wlr-virtual-pointer-unstable-v1-client-protocol.h"
+    "${CMAKE_CURRENT_BINARY_DIR}/wlr-virtual-pointer-unstable-v1-protocol.c"
+  )
+  target_include_directories(omasnap-e2e-vptr PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  target_compile_options(omasnap-e2e-vptr PRIVATE -Wall -Wextra -Wpedantic)
+  target_link_libraries(omasnap-e2e-vptr PRIVATE PkgConfig::WaylandClient)
+endif()
+
 qt_add_executable(stitch-replay
   src/stitch-replay.cpp
   src/stitch.cpp

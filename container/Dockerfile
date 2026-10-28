@@ -16,14 +16,26 @@ ENV HOME=/tmp/home
 RUN install -d -m 1777 /tmp/home
 WORKDIR /src
 
-# Headless compositor stage for compositor tests: a private Sway with the
-# pixman renderer and no input devices, plus the tools that drive and inspect it.
+# Headless compositor stage for compositor tests (`make e2e`): a private Sway
+# with the pixman renderer and no input devices, plus the tools that drive and
+# inspect it. wf-recorder and ffmpeg record each scenario for human review.
+# mako and dbus give notify-send a real notification daemon. foot shows known
+# text for OCR and a long scrollback for scroll capture, with software
+# rendering. ttf-dejavu gives
+# swaybar, foot and Qt a font. swaybg paints the background and
+# adwaita-cursors makes the pointer visible in recordings.
 FROM build AS e2e
 RUN pacman -S --noconfirm --needed \
-        sway grim wtype jq imagemagick file libnotify xdg-utils \
+        sway swaybg grim wtype jq imagemagick file libnotify xdg-utils \
+        wf-recorder ffmpeg mako dbus foot ttf-dejavu adwaita-cursors \
     && pacman -Scc --noconfirm \
     && setcap -r /usr/bin/sway
 # Arch ships sway with cap_sys_nice=ep for realtime scheduling. Docker's
 # default bounding set lacks CAP_SYS_NICE, so exec of a binary with that file
 # capability fails with EPERM. A headless test does not need it.
 ENV WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
+# dbus-daemon needs a passwd entry for the caller's uid. The entrypoint adds
+# one, so /etc/passwd is writable in this test-only stage.
+COPY e2e-entrypoint /usr/local/bin/e2e-entrypoint
+RUN chmod a+w /etc/passwd
+ENTRYPOINT ["/usr/local/bin/e2e-entrypoint"]

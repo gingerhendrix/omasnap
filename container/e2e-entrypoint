@@ -1,0 +1,7 @@
+#!/bin/sh
+# The Makefile runs the container as the caller's uid, which has no passwd
+# entry in the image. dbus-daemon refuses to start without one, so add it.
+if ! getent passwd "$(id -u)" >/dev/null 2>&1; then
+  printf 'e2e:x:%s:%s:e2e:%s:/bin/sh\n' "$(id -u)" "$(id -g)" "$HOME" >>/etc/passwd
+fi
+exec "$@"

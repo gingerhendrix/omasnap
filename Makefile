@@ -27,7 +27,7 @@ DOCKER_RUN = $(DOCKER) run --rm --init --user "$$(id -u):$$(id -g)" \
 	--volume "$(CURDIR):/src" --workdir /src
 
 .PHONY: all configure build clean install check smoke lint qt-lint \
-	docker-image docker-check docker-run docker-shell
+	docker-image docker-check docker-run docker-shell e2e docker-e2e
 
 all: build
 
@@ -97,3 +97,24 @@ docker-run: docker-image
 
 docker-shell: docker-image
 	$(DOCKER_RUN) --interactive --tty $(DOCKER_IMAGE) bash
+
+# Headless Sway e2e scenarios (tests/e2e). `make e2e` runs them with the tools
+# on this machine; `make docker-e2e` runs them in the e2e image. E2E names a
+# subset, for example E2E='pins save-as'. Results and videos go to E2E_OUT.
+# E2E_PACE=0 drops the pauses that make videos readable; E2E_RECORD=0 skips
+# recording.
+e2e:
+	$(CMAKE) -S . -B $(BUILD_DIR) -G $(GENERATOR) \
+		-DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DOMASNAP_E2E=ON
+	$(CMAKE) --build $(BUILD_DIR) --parallel --target omasnap omasnap-e2e-vptr
+	OMASNAP_BIN=$(BUILD_DIR)/omasnap \
+	OMASNAP_E2E_VPTR=$(BUILD_DIR)/omasnap-e2e-vptr \
+	E2E_OUT=$(or $(E2E_OUT),$(BUILD_DIR)/e2e-output) \
+		tests/e2e/run.sh $(E2E)
+
+docker-e2e:
+	$(MAKE) docker-image DOCKER_TARGET=e2e
+	$(DOCKER_RUN) omasnap-dev:e2e make e2e BUILD_DIR=$(DOCKER_BUILD_DIR) \
+		E2E='$(E2E)' $(if $(E2E_OUT),E2E_OUT=$(E2E_OUT)) \
+		$(if $(E2E_PACE),E2E_PACE=$(E2E_PACE)) \
+		$(if $(E2E_RECORD),E2E_RECORD=$(E2E_RECORD))
