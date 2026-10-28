@@ -148,7 +148,10 @@ bar, for human review. Results go to `build-docker/e2e-output/`, and
 `E2E_RECORD=0` skips recording. `make e2e` runs the same scenarios with the
 tools on the host. It never touches the live session: it unsets `SWAYSOCK`
 and `WAYLAND_DISPLAY` and gives each scenario its own runtime folder and
-D-Bus session bus. Add a scenario as `tests/e2e/scenarios/NN-name.sh` using
+D-Bus session bus. The headless seat has no input devices, so each scenario
+holds one virtual pointer and one `wtype` virtual keyboard for its whole run;
+without them, clients bind `wl_pointer` and `wl_keyboard` too late and lose
+the first events. Add a scenario as `tests/e2e/scenarios/NN-name.sh` using
 the helpers in `tests/e2e/lib.sh`. Mark a known gap with `e2e_xfail`, which
 records XFAIL and does not fail the run.
 

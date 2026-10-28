@@ -237,9 +237,10 @@ e2e_omasnap_argv() {
 # Virtual pointer steps in layout coordinates, see tests/e2e/vptr.c.
 e2e_pointer() { "$OMASNAP_E2E_VPTR" "$E2E_LAYOUT_W" "$E2E_LAYOUT_H" "$@"; }
 
-# Type keys with wtype until <condition> holds. A new wtype virtual keyboard
-# can lose its first events to a layer-shell surface in headless Sway, so a
-# single press is not reliable. Retry only keys that are safe to repeat.
+# Type keys with wtype until <condition> holds. With the keyboard that
+# e2e_begin holds, keys took effect on the first attempt in every trial;
+# before it, about half the presses were lost. The retry stays as a guard,
+# so retry only keys that are safe to repeat.
 e2e_keys_until() { # <attempts> <wait-seconds> <condition> -- <wtype args>...
   local attempts="$1" wait="$2" condition="$3"; shift 4
   local attempt
@@ -376,6 +377,13 @@ directory = $e2e_dir/shots"
   # Keep one virtual pointer for the whole scenario (see hold in vptr.c).
   # It parks the cursor in the middle of HEADLESS-1.
   e2e_pointer move 640 400 hold >>"$e2e_dir/clients.log" 2>&1 &
+  e2e_tracked="$e2e_tracked $!"
+  # Keep one virtual keyboard for the whole scenario, for the same reason.
+  # Without it the seat gains keyboard capability only when a wtype starts,
+  # clients bind wl_keyboard in reply, and keys that wtype sends before the
+  # focused client has bound it are lost. `-s` sleeps ten minutes, longer
+  # than run.sh lets a scenario run.
+  wtype -s 600000 >>"$e2e_dir/clients.log" 2>&1 &
   e2e_tracked="$e2e_tracked $!"
   sleep 0.5
   e2e_record_start
