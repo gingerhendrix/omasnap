@@ -18,11 +18,15 @@ fork. It replaces the Hyprland integration and does not keep both.
   through `swaymsg` (`src/sway-ipc.cpp`, `src/pin.cpp`, `src/main.cpp`).
   Pins float, stay sticky, and lose their border. A `no_focus` rule and a
   quoted `for_window` rule are registered once per Sway session so a new
-  pin never takes focus. The stack's work area is the visible workspace
-  rectangle, so bars on any edge are respected.
+  pin never takes focus. `swaymsg reload` drops them; the first pin that
+  maps without them is fixed by hand and registers them again. The stack's
+  work area is the visible workspace rectangle, so bars on any edge are
+  respected.
 - The Save As chooser floats and centers through one quoted `for_window`
   rule, also registered once per Sway session
-  (`src/editor-save-as.cpp`, `src/sway-ipc.cpp`).
+  (`src/editor-save-as.cpp`, `src/sway-ipc.cpp`). After `swaymsg reload`
+  the first chooser maps tiled; omasnap floats and centers it and
+  registers the rule again.
 - Notifications use freedesktop `notify-send` with an image hint.
   `--notify` replaces the timed preview with a 7 s notification, but
   `notify-send` gets no Open or Edit button.

@@ -8,6 +8,7 @@
 #include "sway-ipc.hpp"
 
 #include <LayerShellQt/Window>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDir>
 #include <QFileDialog>
@@ -17,6 +18,7 @@
 #include <QObject>
 #include <QPromise>
 #include <QString>
+#include <QThread>
 #include <QTimer>
 #include <Qt>
 #include <QtTypes>
@@ -24,6 +26,8 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 namespace {
+QString saveAsTitle() { return QStringLiteral("Save screenshot as"); }
+
 void prepareSaveAsWindow() {
   // The overlay has no xdg-shell parent for its chooser. Without a rule,
   // Sway tiles the independent dialog and rearranges the user's windows.
@@ -36,6 +40,30 @@ void prepareSaveAsWindow() {
                              swaySaveAsRuleCommands(),
                              secureRuntimeDirectory()))
     qWarning("Could not configure the floating Save As window");
+}
+
+// After `swaymsg reload` the stamp says the rule exists, but Sway has dropped
+// it, so the chooser maps tiled. Float and centre this chooser, then register
+// the rule again so the next chooser maps floating. Runs on a worker and
+// polls the tree for up to one second, because the chooser maps after open().
+void repairSaveAsWindow(qint64 pid) {
+  for (int attempt = 0; attempt < 20; ++attempt) {
+    for (const SwayWindow &window : swayWindows()) {
+      if (window.pid != pid || window.title != saveAsTitle())
+        continue;
+      if (window.floating)
+        return;
+      if (!swayCommand(QStringLiteral("[con_id=%1] floating enable, "
+                                      "move position center")
+                           .arg(window.id)) ||
+          !reregisterSwayRules(QStringLiteral("save-as-rule"),
+                               swaySaveAsRuleCommands(),
+                               secureRuntimeDirectory()))
+        qWarning("Could not float the Save As window after a Sway reload");
+      return;
+    }
+    QThread::msleep(50);
+  }
 }
 } // namespace
 
@@ -86,7 +114,7 @@ void CaptureEditor::showSaveAsDialog(const QString &suggested) {
   // A normal dialog cannot appear above an exclusive layer-shell overlay.
   // Keep it independent of that hidden widget so Wayland can map/focus it.
   auto *dialog = new QFileDialog(windowedPresentation_ ? this : nullptr,
-                                 QStringLiteral("Save screenshot as"), suggested,
+                                 saveAsTitle(), suggested,
                                  QStringLiteral("PNG image (*.png)"));
   saveAsDialog_ = dialog;
   const quint64 request = saveAsRequest_;
@@ -156,6 +184,10 @@ void CaptureEditor::showSaveAsDialog(const QString &suggested) {
     hide();
   }
   dialog->open();
+  if (QGuiApplication::platformName() == QStringLiteral("wayland") &&
+      !qEnvironmentVariableIsEmpty("SWAYSOCK"))
+    static_cast<void>(QtConcurrent::run(
+        [pid = QCoreApplication::applicationPid()] { repairSaveAsWindow(pid); }));
 }
 
 void CaptureEditor::saveAsToPath(const QString &path) {

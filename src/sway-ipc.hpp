@@ -49,11 +49,23 @@ struct SwayWindow {
 /// Registers rules once per Sway instance. Sway rules have no names and
 /// cannot be withdrawn, so each call would add another copy. A stamp file
 /// `sway-<name>-<hash of SWAYSOCK>` in runtimeDirectory records that this
-/// instance already has them, so a new Sway session registers again. False
+/// instance already has them, so a new Sway session registers again. A
+/// `swaymsg reload` drops the rules and keeps the stamp; see
+/// reregisterSwayRules. False
 /// when SWAYSOCK or runtimeDirectory is empty, or when a command fails.
 [[nodiscard]] bool registerSwayRulesOnce(const QString &name,
                                          const QStringList &commands,
                                          const QString &runtimeDirectory);
+
+/// Registers rules again after the caller saw a view map without them.
+/// `swaymsg reload` drops runtime rules but leaves the stamp, and no omasnap
+/// process is resident to hear the reload event, so the first view that maps
+/// after a reload is the only evidence. Removes the stamp, then behaves like
+/// registerSwayRulesOnce. Each call adds one copy of the rules, so call it
+/// only when a view proves the rules are missing.
+[[nodiscard]] bool reregisterSwayRules(const QString &name,
+                                       const QStringList &commands,
+                                       const QString &runtimeDirectory);
 
 /// The rule that floats and centers the Save As chooser. The overlay editor
 /// is a layer surface, so the chooser has no xdg-shell parent and would tile.

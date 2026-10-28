@@ -183,7 +183,7 @@ bool swayDispatch(const QString &command) { return swayCommand(command); }
 
 // Register the pin rules once per Sway instance (see registerSwayRulesOnce).
 // A `swaymsg reload` drops runtime rules; the placement pass still floats and
-// sticks each pin.
+// sticks each pin, and registers the rules again when a pin maps without them.
 bool registerSwayPinRules() {
   return registerSwayRulesOnce(QStringLiteral("pin-rules"), pinRuleCommands(),
                                secureRuntimeDirectory());
@@ -1777,7 +1777,18 @@ int runPinnedCapture(const QString &path, PinLifetime lifetime) {
                               [&](const CompositorPin &pin) { return pin.title == title; });
       if (own == placement.pins.end())
         return {};
-      if (!own->floating && !swayDispatch(pinFloatDispatch(own->address)))
+      // The pin rule makes a pin floating and sticky as it maps. A pin that
+      // lacks either means Sway lost the rules, which `swaymsg reload` does.
+      // Register them again so the next pin maps floating and unfocused.
+      // Sway may float this pin by itself because its size is fixed, which
+      // leaves the border, so send the float command (with `border none`)
+      // whenever the rules were missing.
+      const bool rulesMissing = !own->floating || !own->pinned;
+      if (rulesMissing &&
+          !reregisterSwayRules(QStringLiteral("pin-rules"), pinRuleCommands(),
+                               secureRuntimeDirectory()))
+        qWarning("omasnap: could not register the pin rules again");
+      if (rulesMissing && !swayDispatch(pinFloatDispatch(own->address)))
         return {};
       if (!own->pinned && !swayDispatch(pinPinDispatch(own->address)))
         return {};

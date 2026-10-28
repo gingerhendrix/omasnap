@@ -3,6 +3,7 @@
 
 #include <QCryptographicHash>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -104,18 +105,30 @@ QVector<SwayWindow> swayWindows() {
       {QStringLiteral("-t"), QStringLiteral("get_tree")}));
 }
 
-bool registerSwayRulesOnce(const QString &name, const QStringList &commands,
-                           const QString &runtimeDirectory) {
+namespace {
+
+// `sway-<name>-<hash of SWAYSOCK>` in runtimeDirectory. Empty when SWAYSOCK
+// or runtimeDirectory is empty.
+QString swayRuleStamp(const QString &name, const QString &runtimeDirectory) {
   const QByteArray socket = qgetenv("SWAYSOCK");
   if (socket.isEmpty() || runtimeDirectory.isEmpty())
-    return false;
-  const QString stamp = QDir(runtimeDirectory).filePath(
+    return {};
+  return QDir(runtimeDirectory).filePath(
       QStringLiteral("sway-%1-%2")
           .arg(name,
                QString::fromLatin1(
                    QCryptographicHash::hash(socket, QCryptographicHash::Sha1)
                        .toHex()
                        .left(16))));
+}
+
+} // namespace
+
+bool registerSwayRulesOnce(const QString &name, const QStringList &commands,
+                           const QString &runtimeDirectory) {
+  const QString stamp = swayRuleStamp(name, runtimeDirectory);
+  if (stamp.isEmpty())
+    return false;
   if (QFileInfo::exists(stamp))
     return true;
   for (const QString &command : commands) {
@@ -124,6 +137,15 @@ bool registerSwayRulesOnce(const QString &name, const QStringList &commands,
   }
   QSaveFile file(stamp);
   return file.open(QIODevice::WriteOnly) && file.commit();
+}
+
+bool reregisterSwayRules(const QString &name, const QStringList &commands,
+                         const QString &runtimeDirectory) {
+  const QString stamp = swayRuleStamp(name, runtimeDirectory);
+  if (stamp.isEmpty())
+    return false;
+  QFile::remove(stamp);
+  return registerSwayRulesOnce(name, commands, runtimeDirectory);
 }
 
 QStringList swaySaveAsRuleCommands() {
