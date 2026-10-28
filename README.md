@@ -673,6 +673,10 @@ recent-history persistence. It is completely silent by default.
 and available static-analysis checks in an Arch Linux container, stages the CMake installation, and uploads a versioned Linux
 artifact. A `v*` tag also attaches that artifact to the corresponding GitHub release.
 
+The container comes from `container/Dockerfile`, and CI enters it through `make docker-check`
+and `make docker-run`. Run `make docker-check` to get the CI result on your machine. It
+builds in `build-docker/`, so it does not touch a native `build/`.
+
 ## Acknowledgements
 
 The capture and annotation workflow is inspired by three excellent screenshot tools:

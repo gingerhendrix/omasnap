@@ -13,33 +13,29 @@ jobs:
   archlinux:
     name: Arch Linux x86_64
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    # The job runs in the image from container/Dockerfile through the same
+    # make targets as a local `make docker-check`. Packages live there.
 
     steps:
-      - name: Install build and runtime dependencies
-        run: >-
-          pacman -Syu --noconfirm --needed
-          base-devel cmake ninja pkgconf qt6-base layer-shell-qt
-          wayland wayland-protocols libdeflate wl-clipboard tesseract tesseract-data-eng
-          clang
-
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Build the container image
+        run: make docker-image DOCKER_BUILD_FLAGS=--pull
+
       - name: Check installer scripts
-        run: bash -n install-arch
+        run: make docker-run CMD='bash -n install-arch'
 
       - name: Build, run interaction smoke, and analyze sources
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: make check
+        run: make docker-check DOCKER_BUILD_DIR=build
 
       - name: Stage installation
-        run: cmake --install build --prefix "$PWD/stage/usr"
+        run: make docker-run CMD='cmake --install build --prefix /src/stage/usr'
 
       - name: Package Linux artifact
         run: |
-          version="$(QT_QPA_PLATFORM=offscreen ./build/omasnap --version | cut -d' ' -f2)"
+          make docker-run CMD="sh -c 'QT_QPA_PLATFORM=offscreen ./build/omasnap --version >build/version.txt'"
+          version="$(cut -d' ' -f2 build/version.txt)"
           archive="omasnap-${version}-archlinux-x86_64.tar.gz"
           echo "CAPTURE_ARCHIVE=${archive}" >> "$GITHUB_ENV"
           echo "CAPTURE_ARTIFACT=${archive%.tar.gz}" >> "$GITHUB_ENV"

@@ -126,6 +126,16 @@ Always run `make check` after behavioral changes. CI
 (`.github/workflows/build-linux.yml`) runs the same build and smoke on every
 push and PR.
 
+To run the checks the way CI does, use `make docker-check`. It builds the
+image from `container/Dockerfile`, bind-mounts the checkout at `/src`, and runs
+`make check` in it as your uid with `BUILD_DIR=build-docker`. CI calls the same
+targets, so the package list lives only in the Dockerfile. `make docker-shell`
+opens a shell in the image, and `make docker-run CMD='...'` runs one command.
+`DOCKER_TARGET=e2e` selects the image with a headless Sway, `grim`, `wtype`,
+`jq` and ImageMagick for compositor tests. Docker caches the `pacman -Syu`
+layer, so refresh a local image with
+`make docker-image DOCKER_BUILD_FLAGS='--pull --no-cache'`.
+
 Dependencies (Arch): `base-devel cmake ninja pkgconf qt6-base layer-shell-qt
 wayland wayland-protocols libdeflate sway wl-clipboard libnotify xdg-utils
 tesseract tesseract-data-eng`. See
