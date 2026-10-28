@@ -53,3 +53,32 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.CAPTURE_ARCHIVE }}
+
+  e2e:
+    name: Headless Sway e2e
+    runs-on: ubuntu-latest
+    # The same `make docker-e2e` as a local run: a private headless Sway in
+    # the e2e stage of container/Dockerfile, one recorded video per scenario.
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Run the e2e scenarios
+        run: make docker-e2e DOCKER_BUILD_FLAGS=--pull DOCKER_BUILD_DIR=build
+
+      - name: Upload e2e results and videos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omasnap-e2e
+          path: |
+            build/e2e-output/summary.md
+            build/e2e-output/*/video.mp4
+            build/e2e-output/*/results.tsv
+            build/e2e-output/*/timeline.txt
+            build/e2e-output/*/steps.log
+            build/e2e-output/*/clients.log
+            build/e2e-output/*/sway.log
+            build/e2e-output/*/frames/
+          if-no-files-found: warn
