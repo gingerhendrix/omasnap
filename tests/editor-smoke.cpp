@@ -61,6 +61,7 @@
 #include <QPixmap>
 #include <QScrollBar>
 #include <QLocale>
+#include <QProcess>
 #include <QTemporaryDir>
 #include <QUrl>
 #include <QWheelEvent>
@@ -2784,7 +2785,8 @@ bool runPostCaptureChecks(QString &error, bool autosave) {
   }
   // Under --notify, a saved capture is announced in a 7 s notify-send toast
   // for the saved PNG instead of a timed preview, both fresh and when saved
-  // from the editor. notify-send has no Open or Edit button on this fork.
+  // from the editor. The toast goes through the action waiter (`sh`) because
+  // it has Edit and Open actions.
   if (autosave) {
     qputenv("OMASNAP_NOTIFY", "1");
     const auto restoreNotify = qScopeGuard([] { qunsetenv("OMASNAP_NOTIFY"); });
@@ -2796,7 +2798,7 @@ bool runPostCaptureChecks(QString &error, bool autosave) {
       QStringList toast;
       editor.setProcessLauncherForTest([&](const QString &program,
                                            const QStringList &args) {
-        if (program == QStringLiteral("notify-send"))
+        if (program == QStringLiteral("sh"))
           toast = args;
         else
           pin = args.last();
@@ -2822,7 +2824,7 @@ bool runPostCaptureChecks(QString &error, bool autosave) {
       const qsizetype timeout = toast.indexOf(QStringLiteral("--expire-time"));
       if (editor.isVisible() || !pin.isEmpty() || timeout < 0 ||
           toast.value(timeout + 1) != QStringLiteral("7000") ||
-          toast.contains(QStringLiteral("--action")) ||
+          !toast.contains(QStringLiteral("open=Open")) ||
           QImage(saved).convertToFormat(expected.format()) != expected) {
         error = QStringLiteral("--notify did not announce the saved %1 capture: %2")
                     .arg(fresh ? QStringLiteral("fresh") : QStringLiteral("edited"),
@@ -6356,15 +6358,17 @@ bool runRecentsShelfSmoke(QApplication &application, QString &error) {
  * notify-send runs without shell parsing, so every value must be its own argv
  * word. A saved path with spaces or quotes stays inside one image-path hint,
  * and `--` must precede the summary and body so they are never read as
- * options. notify-send has no click command, so no --exec may appear.
+ * options. A saved image adds notify-send actions, and the waiter that runs
+ * the chosen one passes the path to omasnap or xdg-open as one word.
  */
 bool runNotificationArgvCheck(QString &error) {
   const QStringList plain =
       captureNotificationArguments(QStringLiteral("Screenshot copied"));
   const qsizetype plainEnd = plain.indexOf(QStringLiteral("--"));
   if (plain.contains(QStringLiteral("--exec")) ||
-      plain.contains(QStringLiteral("--hint"))) {
-    error = QStringLiteral("image-less notification carried --exec/--hint");
+      plain.contains(QStringLiteral("--hint")) ||
+      plain.contains(QStringLiteral("--action"))) {
+    error = QStringLiteral("image-less notification carried --exec/--hint/--action");
     return false;
   }
   if (plainEnd < 0 || plain.size() != plainEnd + 3 ||
@@ -6398,13 +6402,32 @@ bool runNotificationArgvCheck(QString &error) {
                 .arg(saved.join(QStringLiteral(" | ")));
     return false;
   }
-  // A --notify toast for a saved image stays up for 7 s (upstream #199).
-  // notify-send has no Open or Edit button, so the argv shape is unchanged.
+  // A click on a saved capture's notification edits it, as upstream's
+  // "Click to edit"; only the --notify toast has Edit and Open buttons.
+  const auto hasAction = [](const QStringList &arguments, const QString &action) {
+    const qsizetype end = arguments.indexOf(QStringLiteral("--"));
+    for (qsizetype index = 0; index + 1 < end; ++index) {
+      if (arguments.at(index) == QStringLiteral("--action") &&
+          arguments.at(index + 1) == action)
+        return true;
+    }
+    return false;
+  };
+  if (!hasAction(saved, QStringLiteral("default=Edit")) ||
+      hasAction(saved, QStringLiteral("open=Open"))) {
+    error = QStringLiteral("saved notification actions are wrong: %1")
+                .arg(saved.join(QStringLiteral(" | ")));
+    return false;
+  }
+  // A --notify toast for a saved image stays up for 7 s (upstream #199) and
+  // has upstream's Edit and Open buttons.
   const QStringList toast = captureNotificationArguments(
       QStringLiteral("Screenshot saved"), imagePath, true);
   const qsizetype toastTimeout = toast.indexOf(QStringLiteral("--expire-time"));
   if (toastTimeout < 0 || toast.at(toastTimeout + 1) != QStringLiteral("7000") ||
-      toast.contains(QStringLiteral("--action")) ||
+      !hasAction(toast, QStringLiteral("default=Edit")) ||
+      !hasAction(toast, QStringLiteral("edit=Edit")) ||
+      !hasAction(toast, QStringLiteral("open=Open")) ||
       toast.last() != QStringLiteral("Screenshot saved")) {
     error = QStringLiteral("--notify toast argv is wrong: %1")
                 .arg(toast.join(QStringLiteral(" | ")));
@@ -6418,23 +6441,117 @@ bool runNotificationArgvCheck(QString &error) {
     error = QStringLiteral("image-less --notify notice lost the 4.5 s timeout");
     return false;
   }
-  // sendCaptureNotification reads --notify from the environment and always
-  // launches notify-send, never an Omarchy tool.
+  // sendCaptureNotification reads --notify from the environment and never
+  // launches an Omarchy tool. A notice without an image is notify-send
+  // itself; a saved image goes through the action waiter, whose positional
+  // parameters are the omasnap path, the image and the recent id, followed
+  // by the unchanged notify-send argv.
   qputenv("OMASNAP_NOTIFY", "1");
   const auto restoreNotify = qScopeGuard([] { qunsetenv("OMASNAP_NOTIFY"); });
   QString launched;
   QStringList launchedArguments;
+  const auto launcher = [&](const QString &program, const QStringList &args) {
+    launched = program;
+    launchedArguments = args;
+    return true;
+  };
+  sendCaptureNotification(QStringLiteral("Screenshot copied"), {}, {}, launcher);
+  if (launched != QStringLiteral("notify-send") ||
+      launchedArguments != plainToast) {
+    error = QStringLiteral("an image-less notice launched %1 with %2")
+                .arg(launched, launchedArguments.join(QStringLiteral(" | ")));
+    return false;
+  }
   sendCaptureNotification(QStringLiteral("Screenshot saved"), imagePath,
-                          QStringLiteral("recent-id"),
-                          [&](const QString &program, const QStringList &args) {
-                            launched = program;
-                            launchedArguments = args;
-                            return true;
-                          });
-  if (launched != QStringLiteral("notify-send") || launchedArguments != toast) {
+                          QStringLiteral("recent-id"), launcher);
+  if (launched != QStringLiteral("sh") || launchedArguments.size() != 6 + toast.size() ||
+      launchedArguments.at(0) != QStringLiteral("-c") ||
+      launchedArguments.at(4) != imagePath ||
+      launchedArguments.at(5) != QStringLiteral("recent-id") ||
+      launchedArguments.mid(6) != toast) {
     error = QStringLiteral("--notify launched %1 with %2")
                 .arg(launched, launchedArguments.join(QStringLiteral(" | ")));
     return false;
+  }
+
+  // Run the waiter with stand-ins: a notify-send that answers with an action
+  // and records its argv, and an omasnap and xdg-open that record theirs.
+  // The path with a quote and a space must arrive as one word every time.
+  QTemporaryDir bin;
+  if (!bin.isValid()) {
+    error = QStringLiteral("could not make a folder for the waiter stand-ins");
+    return false;
+  }
+  const auto writeTool = [&](const QString &name, const QByteArray &body) {
+    QFile tool(bin.filePath(name));
+    return tool.open(QIODevice::WriteOnly) && tool.write(body) >= 0 &&
+           tool.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                               QFileDevice::ExeOwner);
+  };
+  const QString record = bin.filePath(QStringLiteral("record"));
+  const QByteArray recorder = R"(#!/bin/sh
+{ printf '%s\n' "${0##*/}"; printf '[%s]\n' "$@"; } >>"$RECORD"
+)";
+  if (!writeTool(QStringLiteral("notify-send"), R"(#!/bin/sh
+printf '[%s]\n' "$@" >>"$RECORD"
+printf '%s\n' "$ACTION"
+)") ||
+      !writeTool(QStringLiteral("omasnap"), recorder) ||
+      !writeTool(QStringLiteral("xdg-open"), recorder)) {
+    error = QStringLiteral("could not write the waiter stand-ins");
+    return false;
+  }
+  const auto runWaiter = [&](const QString &action, const QString &recent,
+                             QStringList &lines) {
+    QFile::remove(record);
+    QStringList arguments = captureNotificationCommand(
+        QStringLiteral("Screenshot saved"), imagePath, recent, true).arguments;
+    arguments[3] = bin.filePath(QStringLiteral("omasnap"));
+    QProcess waiter;
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.insert(QStringLiteral("PATH"),
+                       bin.path() + QLatin1Char(':') + environment.value(QStringLiteral("PATH")));
+    environment.insert(QStringLiteral("RECORD"), record);
+    environment.insert(QStringLiteral("ACTION"), action);
+    waiter.setProcessEnvironment(environment);
+    waiter.start(QStringLiteral("sh"), arguments);
+    if (!waiter.waitForFinished(5000))
+      return false;
+    QFile file(record);
+    if (!file.open(QIODevice::ReadOnly))
+      return false;
+    lines = QString::fromUtf8(file.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    return true;
+  };
+  QStringList toastWords;
+  for (const QString &word : toast)
+    toastWords << QStringLiteral("[%1]").arg(word);
+  const QString pathWord = QStringLiteral("[%1]").arg(imagePath);
+  struct WaiterCase {
+    QString action;
+    QString recent;
+    QStringList ran;
+  };
+  const QList<WaiterCase> cases{
+      {QStringLiteral("edit"), QStringLiteral("recent-id"),
+       {QStringLiteral("omasnap"), QStringLiteral("[--recent]"),
+        QStringLiteral("[recent-id]"), QStringLiteral("[--]"), pathWord}},
+      {QStringLiteral("default"), {},
+       {QStringLiteral("omasnap"), QStringLiteral("[--]"), pathWord}},
+      {QStringLiteral("open"), QStringLiteral("recent-id"),
+       {QStringLiteral("xdg-open"), pathWord}},
+      // Closed or expired: notify-send prints nothing and nothing runs.
+      {QString(), QStringLiteral("recent-id"), {}},
+  };
+  for (const WaiterCase &waiterCase : cases) {
+    QStringList lines;
+    if (!runWaiter(waiterCase.action, waiterCase.recent, lines) ||
+        lines.mid(0, toastWords.size()) != toastWords ||
+        lines.mid(toastWords.size()) != waiterCase.ran) {
+      error = QStringLiteral("the notification waiter for action '%1' ran: %2")
+                  .arg(waiterCase.action, lines.join(QStringLiteral(" ")));
+      return false;
+    }
   }
   return true;
 }

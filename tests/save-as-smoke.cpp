@@ -304,7 +304,8 @@ bool runSaveAsSmoke(QString &error) {
     QStringList toast;
     bool previewed = false;
     editor.setProcessLauncherForTest([&](const QString &program, const QStringList &args) {
-      if (program == QStringLiteral("notify-send"))
+      // A saved image's notification runs through the action waiter (`sh`).
+      if (program == QStringLiteral("sh"))
         toast = args;
       else
         previewed = true;

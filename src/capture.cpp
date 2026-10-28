@@ -2733,28 +2733,75 @@ QStringList captureNotificationArguments(const QString &message,
   // notify-send runs without a shell. Each value is one argv word, so paths
   // with spaces or quotes need no quoting. `--` keeps a message that starts
   // with a dash from being read as an option. A --notify toast for a saved
-  // image stays up for 7 s, as upstream's does; it has no Open or Edit button.
+  // image stays up for 7 s, as upstream's does.
   const bool saved = toast && !imagePath.isEmpty();
   QStringList arguments{QStringLiteral("--app-name"), QStringLiteral("omasnap"),
                         QStringLiteral("--expire-time"),
                         saved ? QStringLiteral("7000") : QStringLiteral("4500")};
-  if (!imagePath.isEmpty())
+  if (!imagePath.isEmpty()) {
     arguments << QStringLiteral("--hint")
               << QStringLiteral("string:image-path:%1").arg(imagePath);
+    // A click invokes `default`, as upstream's "Click to edit". The toast
+    // also offers upstream's Edit and Open buttons. An action makes
+    // notify-send wait and print the chosen name on stdout.
+    arguments << QStringLiteral("--action") << QStringLiteral("default=Edit");
+    if (saved)
+      arguments << QStringLiteral("--action") << QStringLiteral("edit=Edit")
+                << QStringLiteral("--action") << QStringLiteral("open=Open");
+  }
   arguments << QStringLiteral("--") << QStringLiteral("Omasnap") << message;
   return arguments;
 }
 
+namespace {
+
+// Waits for notify-send's chosen action and runs it. The text is fixed;
+// $1..$3 are the omasnap path, the image and the recent id, and the rest is
+// the notify-send argv, so no value is ever parsed as shell code. A closed
+// or expired notification prints nothing and the script ends.
+constexpr auto kNotificationActionScript =
+    "omasnap=$1 image=$2 recent=$3; shift 3\n"
+    "case $(notify-send \"$@\") in\n"
+    "open) exec xdg-open \"$image\" ;;\n"
+    "default|edit)\n"
+    "  if [ -n \"$recent\" ]; then exec \"$omasnap\" --recent \"$recent\" -- \"$image\"; fi\n"
+    "  exec \"$omasnap\" -- \"$image\" ;;\n"
+    "esac\n";
+
+QString omasnapProgram() {
+  // The waiter outlives this process, so name the binary that is running
+  // now. Fall back to PATH when it cannot be found (as upstream does).
+  const QString beside = QDir(QCoreApplication::applicationDirPath())
+                             .filePath(QStringLiteral("omasnap"));
+  return QFileInfo::exists(beside) ? beside : QStringLiteral("omasnap");
+}
+
+} // namespace
+
+CaptureNotificationCommand
+captureNotificationCommand(const QString &message, const QString &imagePath,
+                           const QString &recentId, bool toast) {
+  const QStringList notify =
+      captureNotificationArguments(message, imagePath, toast);
+  if (imagePath.isEmpty())
+    return {QStringLiteral("notify-send"), notify};
+  return {QStringLiteral("sh"),
+          QStringList{QStringLiteral("-c"),
+                      QString::fromLatin1(kNotificationActionScript),
+                      QStringLiteral("omasnap-notify"), omasnapProgram(),
+                      imagePath, recentId} +
+              notify};
+}
+
 void sendCaptureNotification(
     const QString &message, const QString &imagePath,
-    const QString & /*recentId*/,
+    const QString &recentId,
     const std::function<bool(const QString &, const QStringList &)> &launcher) {
-  const QString program = QStringLiteral("notify-send");
-  const QStringList arguments = captureNotificationArguments(
-      message, imagePath, notifySavedCaptures());
-  if (!(launcher ? launcher(program, arguments)
-                 : QProcess::startDetached(program, arguments)))
-    qWarning("Could not start %s", qPrintable(program));
+  const CaptureNotificationCommand command = captureNotificationCommand(
+      message, imagePath, recentId, notifySavedCaptures());
+  if (!(launcher ? launcher(command.program, command.arguments)
+                 : QProcess::startDetached(command.program, command.arguments)))
+    qWarning("Could not start %s", qPrintable(command.program));
 }
 
 void describeFileCapture(CaptureData &capture, QImage image,

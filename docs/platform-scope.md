@@ -27,9 +27,11 @@ fork. It replaces the Hyprland integration and does not keep both.
   (`src/editor-save-as.cpp`, `src/sway-ipc.cpp`). After `swaymsg reload`
   the first chooser maps tiled; omasnap floats and centers it and
   registers the rule again.
-- Notifications use freedesktop `notify-send` with an image hint.
-  `--notify` replaces the timed preview with a 7 s notification, but
-  `notify-send` gets no Open or Edit button.
+- Notifications use freedesktop `notify-send` with an image hint and
+  `--action`. A click edits the saved capture. `--notify` replaces the
+  timed preview with a 7 s notification that also has Edit and Open
+  actions. A fixed `sh -c` script waits for the chosen action
+  (`captureNotificationCommand` in `src/capture.cpp`).
 - Chrome colors read Omarchy theme files when they exist and otherwise use
   the built-in palette.
 

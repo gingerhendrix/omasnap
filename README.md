@@ -131,9 +131,9 @@ Runtime commands used by the application:
 - `wl-copy` and `wl-paste`
 - `tesseract`
 - `xdg-open` (and optionally `xdg-mime` and `busctl`) for the folder button
-- `notify-send`; saved captures include an image hint. There is no click-to-edit
-  action; reopen a saved file with `omasnap <path>`. Notification failure does not
-  invalidate output.
+- `notify-send` from libnotify 0.8 or later, for `--action`; saved captures include an
+  image hint, and a click on the notification opens the capture in the editor.
+  Notification failure does not invalidate output.
 
 ## Install on Arch Linux and Sway
 
@@ -270,9 +270,10 @@ fullscreen captures output immediately. Quick output cannot be combined with `--
 
 Add `--notify` to announce every saved capture in a notification instead of a preview.
 On this Sway fork the notification comes from `notify-send`: it shows the capture as an
-image hint for 7 seconds and has no **Open** or **Edit** button, so reopen the capture
-from the recents shelf. Upstream's Omarchy version adds those buttons through
-`omarchy-notification-send`. Pins and editors opened from that
+image hint for 7 seconds with **Edit** and **Open** actions. Edit reopens the capture's
+layers from the recents shelf, and Open shows the file in the default image viewer.
+How the actions appear depends on the notification daemon: mako runs the default action
+(Edit) on a click and lists the others in `makoctl menu`. Pins and editors opened from that
 capture keep the option. Copy-only captures still show their preview, since there is
 no file to open.
 
@@ -329,9 +330,10 @@ omasnap --clipboard
 The clipboard must offer readable image data. Text-only clipboard contents return an
 error instead of opening an empty editor.
 
-File URLs are accepted too. Saved-capture notifications go through `notify-send`, which has
-no click command, so they carry the image but no reopen action. Every notification value is
-passed as its own argv word, without shell parsing.
+File URLs are accepted too. Saved-capture notifications go through `notify-send` with a
+`default` action, so a click reopens the saved file. A small `sh -c` script waits for the
+chosen action; it is fixed text, and the paths reach it as positional parameters, so every
+notification value stays its own argv word, without shell parsing.
 
 ### Recent captures
 

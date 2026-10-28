@@ -465,18 +465,35 @@ bool removeEditorHandoff(const QString &path, const QString &token);
 [[nodiscard]] QString recognizeText(const QImage &image, QString &error);
 /** Whether saved captures are announced in a notification instead of a timed
  *  preview: set by --notify and inherited by the pins and editors that
- *  process starts. On Sway the notification comes from notify-send and has
- *  no Open or Edit button. */
+ *  process starts. On Sway the notification comes from notify-send; its Edit
+ *  and Open actions run through the waiter that captureNotificationCommand
+ *  builds. */
 [[nodiscard]] bool notifySavedCaptures();
 /** Builds the freedesktop `notify-send` argv. Every value is a separate word
- *  with no shell parsing. A saved image travels as one `image-path` hint word.
- *  `notify-send` has no click command, so there is no reopen action. A toast
- *  (--notify with a saved image) stays up for 7 s, other notices for 4.5 s. */
+ *  with no shell parsing. A saved image travels as one `image-path` hint word
+ *  and adds a `default` action (a click on the notification) that edits it.
+ *  A toast (--notify with a saved image) also gets Edit and Open buttons and
+ *  stays up for 7 s; other notices stay up for 4.5 s. */
 [[nodiscard]] QStringList
 captureNotificationArguments(const QString &message,
                              const QString &imagePath = {}, bool toast = false);
-/** Starts notify-send through the launcher when one is given. recentId is
- *  accepted for upstream's callers; notify-send has no Edit button to use it. */
+/** A program and its argv, ready for QProcess::startDetached or a test
+ *  launcher. */
+struct CaptureNotificationCommand {
+  QString program;
+  QStringList arguments;
+};
+/** What sendCaptureNotification starts. Without an image it is notify-send
+ *  itself. With an image it is `sh -c` running a fixed script that waits for
+ *  notify-send to print the chosen action, then runs `omasnap [--recent id]
+ *  -- image` for Edit or `xdg-open image` for Open. The omasnap path, image
+ *  and recent id are positional parameters of that script, so the shell never
+ *  parses them, and the notify-send argv follows them unchanged. */
+[[nodiscard]] CaptureNotificationCommand
+captureNotificationCommand(const QString &message, const QString &imagePath = {},
+                           const QString &recentId = {}, bool toast = false);
+/** Starts captureNotificationCommand through the launcher when one is given.
+ *  recentId lets Edit reopen the capture's layers from the recent shelf. */
 void sendCaptureNotification(
     const QString &message, const QString &imagePath = {},
     const QString &recentId = {},
